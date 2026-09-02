@@ -6,11 +6,14 @@ your existing Claude Code credentials — no separate login or API key needed.
 ## Quick start
 
 ```bash
-pi install npm:@fdietze/pi-claude-auth
+pi install git:github.com/fdietze/pi-claude-auth@v0.3.0
 ```
 
 Restart pi, pick a model with `/model` (or Ctrl+L). Done — your Claude Code
 credentials are already seeded.
+
+> This fork is distributed via git tags, not npm. Pin to a tag (e.g. `@v0.3.0`)
+> for a reproducible install; use `@main` to track the latest.
 
 ## Prerequisites
 
@@ -32,11 +35,12 @@ credentials are already seeded.
 ### Option A: pi package manager (recommended)
 
 ```bash
-pi install npm:@fdietze/pi-claude-auth
+pi install git:github.com/fdietze/pi-claude-auth@v0.3.0
 ```
 
-Installs the extension globally to `~/.pi/agent/npm/`. Use `-l` for a
-project-local install.
+pi clones the tag into `~/.pi/agent/git/` and loads the extension straight from
+`src/index.ts` (it has no runtime dependencies). Use `-l` for a project-local
+install.
 
 ### Option B: Declare in settings.json (dotfiles-friendly)
 
@@ -44,7 +48,7 @@ Add to `~/.pi/agent/settings.json` (global) or `.pi/settings.json` (project):
 
 ```json
 {
-    "packages": ["npm:@fdietze/pi-claude-auth@latest"]
+    "packages": ["git:github.com/fdietze/pi-claude-auth@v0.3.0"]
 }
 ```
 
@@ -61,8 +65,10 @@ https://raw.githubusercontent.com/fdietze/pi-claude-auth/main/installation.md
 
 ### Updating
 
+Move to a newer tag (or `main`) by reinstalling at the new ref:
+
 ```bash
-pi update npm:@fdietze/pi-claude-auth
+pi install git:github.com/fdietze/pi-claude-auth@v0.3.0
 ```
 
 ## Verify it's working
@@ -76,7 +82,7 @@ pi config
 You should see the extension listed:
 
 ```
-npm:@fdietze/pi-claude-auth (user)
+git:github.com/fdietze/pi-claude-auth@v0.3.0 (user)
   Extensions
     [x] src/index.ts
 ```
@@ -172,21 +178,21 @@ one account is found, the picker is skipped.
 | Not working on Linux/Windows       | Ensure `~/.claude/.credentials.json` exists. Run `claude` to create it                                           |
 | Keychain access denied             | Grant access when macOS prompts you                                                                              |
 | Keychain read timed out            | Restart Keychain Access (can happen on macOS Tahoe)                                                              |
-| Package not updating               | Run `pi update npm:@fdietze/pi-claude-auth`                                                                |
+| Package not updating               | Reinstall at the ref: `pi install git:github.com/fdietze/pi-claude-auth@v0.3.0`                            |
 
 ### Claude Code version pinning
 
-The Claude Code version is pinned to `2.1.160` for billing header computation.
+The Claude Code version is pinned to `2.1.252` for billing header computation.
 If billing reverts to extra usage after a Claude Code update, override:
 
 ```bash
 export ANTHROPIC_CLI_VERSION=<new-version>
 ```
 
-or update the package:
+or reinstall at a newer tag:
 
 ```bash
-pi update npm:@fdietze/pi-claude-auth
+pi install git:github.com/fdietze/pi-claude-auth@v0.3.0
 ```
 
 ### Diagnostic logging
@@ -287,8 +293,11 @@ skip-on-torn-read) `auth.json` writes based on
 [#3](https://github.com/pankajudhas81/pi-claude-auth/pull/3) by
 [@itsmingjie](https://github.com/itsmingjie), shell-free credential subprocess
 calls (`execFileSync`) from
-[@ftriquet](https://github.com/ftriquet)'s hardening audit, and bumps the
-pinned Claude Code version. All credit for the original design belongs upstream.
+[@ftriquet](https://github.com/ftriquet)'s hardening audit, macOS multi-account
+Keychain disambiguation from
+[#5](https://github.com/pankajudhas81/pi-claude-auth/pull/5) by
+[@mattsegura](https://github.com/mattsegura), and bumps the pinned Claude Code
+version. All credit for the original design belongs upstream.
 
 The upstream project is motivated by and copies patterns from
 [opencode-claude-auth](https://github.com/griffinmartin/opencode-claude-auth)

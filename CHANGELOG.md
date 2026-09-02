@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.0
+
+### Fixes
+
+- macOS: disambiguate Keychain credential items by service **and** account. When
+  two items share the `Claude Code-credentials` service (a legacy `default` and
+  the current username account), `security -s` returned an arbitrary — often
+  stale — item, causing persistent 401s that re-running `claude` could not fix.
+  The dump is now parsed per item, reads pass `-a <account>`, accounts are sorted
+  by expiry (freshest is default), and write-back targets the exact item it read.
+  Legacy service-only sources keep working. Based on upstream PR #5 by
+  @mattsegura.
+
 ## 0.2.0
 
 Fork of `@pankajudhas81/pi-claude-auth`.
