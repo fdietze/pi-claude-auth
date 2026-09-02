@@ -1,7 +1,7 @@
 {
-    "name": "@pankajudhas81/pi-claude-auth",
-    "version": "0.1.0",
-    "description": "Pi coding agent extension that uses your Claude Code credentials — no separate login needed.",
+    "name": "@fdietze/pi-claude-auth",
+    "version": "0.2.0",
+    "description": "Pi coding agent extension that uses your Claude Code credentials — no separate login needed. Fork of @pankajudhas81/pi-claude-auth with concurrency-safe auth.json writes, shell-free credential subprocess calls, and a bumped Claude Code version.",
     "keywords": [
         "anthropic",
         "auth",
@@ -13,7 +13,7 @@
     "license": "MIT",
     "repository": {
         "type": "git",
-        "url": "git+https://github.com/pankajudhas81/pi-claude-auth.git"
+        "url": "git+https://github.com/fdietze/pi-claude-auth.git"
     },
     "files": [
         "src",

@@ -6,7 +6,7 @@ your existing Claude Code credentials — no separate login or API key needed.
 ## Quick start
 
 ```bash
-pi install npm:@pankajudhas81/pi-claude-auth
+pi install npm:@fdietze/pi-claude-auth
 ```
 
 Restart pi, pick a model with `/model` (or Ctrl+L). Done — your Claude Code
@@ -32,7 +32,7 @@ credentials are already seeded.
 ### Option A: pi package manager (recommended)
 
 ```bash
-pi install npm:@pankajudhas81/pi-claude-auth
+pi install npm:@fdietze/pi-claude-auth
 ```
 
 Installs the extension globally to `~/.pi/agent/npm/`. Use `-l` for a
@@ -44,7 +44,7 @@ Add to `~/.pi/agent/settings.json` (global) or `.pi/settings.json` (project):
 
 ```json
 {
-    "packages": ["npm:@pankajudhas81/pi-claude-auth@latest"]
+    "packages": ["npm:@fdietze/pi-claude-auth@latest"]
 }
 ```
 
@@ -56,13 +56,13 @@ Paste this into any LLM agent (pi, Claude Code, Cursor, etc.):
 
 ```
 Install the pi-claude-auth package and configure it by following:
-https://raw.githubusercontent.com/pankajudhas81/pi-claude-auth/main/installation.md
+https://raw.githubusercontent.com/fdietze/pi-claude-auth/main/installation.md
 ```
 
 ### Updating
 
 ```bash
-pi update npm:@pankajudhas81/pi-claude-auth
+pi update npm:@fdietze/pi-claude-auth
 ```
 
 ## Verify it's working
@@ -76,7 +76,7 @@ pi config
 You should see the extension listed:
 
 ```
-npm:@pankajudhas81/pi-claude-auth (user)
+npm:@fdietze/pi-claude-auth (user)
   Extensions
     [x] src/index.ts
 ```
@@ -172,7 +172,7 @@ one account is found, the picker is skipped.
 | Not working on Linux/Windows       | Ensure `~/.claude/.credentials.json` exists. Run `claude` to create it                                           |
 | Keychain access denied             | Grant access when macOS prompts you                                                                              |
 | Keychain read timed out            | Restart Keychain Access (can happen on macOS Tahoe)                                                              |
-| Package not updating               | Run `pi update npm:@pankajudhas81/pi-claude-auth`                                                                |
+| Package not updating               | Run `pi update npm:@fdietze/pi-claude-auth`                                                                |
 
 ### Claude Code version pinning
 
@@ -186,7 +186,7 @@ export ANTHROPIC_CLI_VERSION=<new-version>
 or update the package:
 
 ```bash
-pi update npm:@pankajudhas81/pi-claude-auth
+pi update npm:@fdietze/pi-claude-auth
 ```
 
 ### Diagnostic logging
@@ -280,7 +280,17 @@ request fidelity (identity, beta flags, tool naming) for OAuth tokens.
 
 ## Acknowledgements
 
-This project is motivated by and copies patterns from
+This is a fork of
+[@pankajudhas81/pi-claude-auth](https://github.com/pankajudhas81/pi-claude-auth)
+by Pankaj Udhas. It adds concurrency-safe (atomic, no-op-when-unchanged,
+skip-on-torn-read) `auth.json` writes based on
+[#3](https://github.com/pankajudhas81/pi-claude-auth/pull/3) by
+[@itsmingjie](https://github.com/itsmingjie), shell-free credential subprocess
+calls (`execFileSync`) from
+[@ftriquet](https://github.com/ftriquet)'s hardening audit, and bumps the
+pinned Claude Code version. All credit for the original design belongs upstream.
+
+The upstream project is motivated by and copies patterns from
 [opencode-claude-auth](https://github.com/griffinmartin/opencode-claude-auth)
 by Griffin Martin. That project solved the same problem for
 [opencode](https://github.com/nichochar/opencode) — reusing Claude Code OAuth
