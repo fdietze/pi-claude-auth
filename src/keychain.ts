@@ -1,4 +1,4 @@
-import { execFileSync, execSync } from "node:child_process"
+import { execFileSync } from "node:child_process"
 import { chmodSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
@@ -76,8 +76,11 @@ function parseCredentials(raw: string): ClaudeCredentials | null {
 
 function readKeychainService(serviceName: string): string | null {
     try {
-        const result = execSync(
-            `security find-generic-password -s "${serviceName}" -w`,
+        // execFileSync with an argument array avoids shell interpolation of
+        // serviceName — least attack surface for the Keychain read.
+        const result = execFileSync(
+            "/usr/bin/security",
+            ["find-generic-password", "-s", serviceName, "-w"],
             {
                 timeout: 2000,
                 encoding: "utf-8",
@@ -142,7 +145,7 @@ function readKeychainService(serviceName: string): string | null {
 
 function listClaudeKeychainServices(): string[] {
     try {
-        const dump = execSync("security dump-keychain", {
+        const dump = execFileSync("/usr/bin/security", ["dump-keychain"], {
             timeout: 5000,
             maxBuffer: 1024 * 1024 * 10, // 10 MB
             encoding: "utf-8",

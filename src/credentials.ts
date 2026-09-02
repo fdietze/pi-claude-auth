@@ -1,4 +1,4 @@
-import { execFileSync, execSync } from "node:child_process"
+import { execFileSync } from "node:child_process"
 import {
     chmodSync,
     existsSync,
@@ -262,7 +262,9 @@ function refreshViaCli(): void {
     for (let i = 0; i < maxAttempts; i++) {
         log("refresh_started", { source: "cli", attempt: i + 1 })
         try {
-            execSync("claude -p . --model haiku", {
+            // execFileSync (argument array, no shell) avoids shell parsing of
+            // the command string — least attack surface for the CLI fallback.
+            execFileSync("claude", ["-p", ".", "--model", "haiku"], {
                 timeout: 60_000,
                 encoding: "utf-8",
                 env: { ...process.env, TERM: "dumb" },
