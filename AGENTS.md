@@ -1,3 +1,33 @@
+# pi-claude-auth — map for changing the code
+
+pi extension that authenticates pi as Claude Code by reading Claude Code's own
+OAuth credentials. Requires pi 0.85+.
+
+**Governing rule: Claude Code is the only writer of its credentials.** Claude's
+refresh tokens are single-use, so a second rotator gets the session revoked and
+logs the user out. pi reads the credentials, delegates every refresh to the
+`claude` CLI, and never stores the real refresh token in pi's `auth.json`.
+
+| File | Contains |
+|------|----------|
+| `src/index.ts` | The extension: provider registration, OAuth hooks, session notification |
+| `src/credentials.ts` | Account list, active account, and the wiring of the credential store to real files/CLI |
+| `src/credential-store.ts` | The policy: when to re-read, when to delegate a refresh, when to give up. All effects injected, so it is testable without `claude` |
+| `src/keychain.ts` | Reading and parsing Claude Code credentials (macOS Keychain, credentials file) |
+| `src/claude-cli.ts` | Running `claude` to make it refresh its own credentials |
+| `src/file-lock.ts` | Cross-process mutex (exclusive file create) used to serialize the refresh |
+| `src/login-marker.ts` | Shared record of a login that could not be refreshed, so no process retries pointlessly |
+| `src/auth-json.ts` | Writing pi's `auth.json` entry (empty refresh token, pi's lock protocol) |
+| `src/paths.ts` | Every path the extension touches |
+| `src/signing.ts`, `src/transforms.ts` | Claude Code user-agent and billing header |
+| `src/logger.ts` | Opt-in redacted diagnostics (`PI_CLAUDE_AUTH_DEBUG`) |
+
+`just all` (lint, build, test) must pass before every commit.
+
+Tests must never touch the real `~/.claude` credentials or `~/.pi/agent`:
+they override `HOME` and `PI_CODING_AGENT_DIR` to a temp dir, and never run a
+real `claude` refresh (redeeming the refresh token would log the user out).
+
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 

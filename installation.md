@@ -13,7 +13,7 @@ authenticated.
 pi --version
 ```
 
-You should see a version number (e.g., `0.78.0`).
+You should see a version number. pi 0.85 or newer is required.
 
 ### Check Claude Code credentials (macOS)
 

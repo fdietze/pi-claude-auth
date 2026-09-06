@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.4.0
+
+Claude Code is now the only writer of its credentials; pi only reads them.
+Requires pi 0.85 or newer.
+
+### Fixes
+
+- Never rotate the Claude OAuth refresh token. Rotation is single-use, so pi and
+  Claude Code redeeming the same token revokes the session server-side and logs
+  the user out of Claude Code. pi's `auth.json` now stores an empty refresh
+  token, and the only refresh path is delegation to the `claude` CLI.
+- Remove the in-process OAuth refresh. It ran
+  `execFileSync(process.execPath, ["-e", script])`, but in a pi install
+  `process.execPath` is the pi binary, whose `-e` means `--extension`: every
+  refresh spawned a full pi process that hung until its timeout. With expired
+  credentials this repeated on every credential access and exhausted RAM.
+- Serialize the delegated refresh with a lock file under `~/.pi/agent`, so many
+  concurrent pi processes produce at most one `claude` refresh. Waiters watch
+  the credential source and use the holder's result instead of spawning.
+- A failed login is recorded in `~/.pi/agent/claude-login-unusable.json` and
+  costs nothing until Claude Code writes new credentials: no subprocess, no
+  network, no timer. pi notifies once per session and reports an actionable
+  error instead of an opaque 401.
+- Write `auth.json` with `proper-lockfile` using pi's own parameters, replacing
+  a second, incompatible write protocol on the same file.
+
+### Changed
+
+- Credentials are re-read when the file's mtime or size changed, replacing the
+  30-second TTL cache. Keychain sources are re-read on expiry.
+- Refresh no longer happens on the request path: `getApiKey` only reads, and pi
+  drives refreshes through `oauth.refreshToken`.
+- Dropped the 5-minute `auth.json` sync timer and the credential write-back to
+  the Keychain / credentials file (`claude` writes them now).
+- Removed the `validate:oauth` script and its `just` targets.
+
 ## 0.3.0
 
 ### Fixes
