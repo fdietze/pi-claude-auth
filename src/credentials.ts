@@ -7,12 +7,8 @@ import {
 } from "node:fs"
 import { dirname, join } from "node:path"
 import { refreshViaClaudeCli } from "./claude-cli.ts"
-import {
-    CredentialStore,
-    NO_CREDENTIALS_MESSAGE,
-    REFRESH_LOCK_STALE_MS,
-} from "./credential-store.ts"
-import { tryAcquireFileLock } from "./file-lock.ts"
+import { CredentialStore, NO_CREDENTIALS_MESSAGE } from "./credential-store.ts"
+import { acquireRefreshLock } from "./refresh-lock.ts"
 import {
     readAccountCredentials,
     readAllClaudeAccounts,
@@ -21,11 +17,7 @@ import {
 } from "./keychain.ts"
 import { readFutileRefresh, writeFutileRefresh } from "./futile-refresh.ts"
 import { log } from "./logger.ts"
-import {
-    getClaudeCredentialsPath,
-    getPiAgentDir,
-    getRefreshLockPath,
-} from "./paths.ts"
+import { getClaudeCredentialsPath, getPiAgentDir } from "./paths.ts"
 
 export type { ClaudeCredentials } from "./keychain.ts"
 export type { ClaudeAccount } from "./keychain.ts"
@@ -54,10 +46,7 @@ function stampSource(source: string): string | null {
 const store = new CredentialStore({
     readSource: readAccountCredentials,
     stampSource,
-    acquireRefreshLock: () =>
-        tryAcquireFileLock(getRefreshLockPath(), {
-            staleMs: REFRESH_LOCK_STALE_MS,
-        }),
+    acquireRefreshLock,
     runClaudeRefresh: refreshViaClaudeCli,
     readFutileRefresh,
     writeFutileRefresh,

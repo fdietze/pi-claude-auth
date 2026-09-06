@@ -1,4 +1,4 @@
-import type { FileLock } from "./file-lock.ts"
+import { CLAUDE_TIMEOUT_MS, ClaudeCliUnavailable } from "./claude-cli.ts"
 import type { ClaudeCredentials } from "./keychain.ts"
 import type { FutileRefresh } from "./futile-refresh.ts"
 import { log } from "./logger.ts"
@@ -16,27 +16,22 @@ export const MIN_VALIDITY_MS = 5 * 60_000
 /**
  * How long a waiter watches for another process's refresh result.
  *
- * pi holds its own auth.json lock while awaiting our refresh and treats that
- * lock as stale after 30s, so a refresh that takes longer is discarded by pi
- * even when it succeeded (the request fails once, the retry then finds the
- * fresh credentials immediately). Waiting far past that budget only delays the
- * failure, so waiters give up well before it.
+ * Bounded by what actually bounds the holder — the Claude CLI timeout — plus a
+ * margin for reading the result. Giving up earlier would turn a refresh that
+ * did succeed into a failed request for every waiter, and losing a refresh is
+ * worse than waiting for one.
  */
-const LOCK_WAIT_MS = 25_000
+const LOCK_WAIT_MS = CLAUDE_TIMEOUT_MS + 10_000
 const LOCK_POLL_MS = 250
-
-/**
- * When to consider the refresh lock abandoned. Must exceed the Claude CLI
- * timeout in claude-cli.ts, otherwise a slow-but-alive refresh would be
- * declared dead and a second CLI would start.
- */
-export const REFRESH_LOCK_STALE_MS = 120_000
 
 export const LOGIN_EXPIRED_MESSAGE =
     "Claude Code login expired or revoked. Run `claude` and log in, then retry."
 
 export const REFRESH_BUSY_MESSAGE =
     "Another pi process is refreshing the Claude Code credentials. Retry in a moment."
+
+export const CLAUDE_UNAVAILABLE_MESSAGE =
+    "Could not run the `claude` CLI to refresh the Claude Code credentials. Make sure it is installed and on PATH."
 
 export const NO_CREDENTIALS_MESSAGE =
     "No Claude Code credentials found. Run `claude` to authenticate first."
@@ -45,6 +40,10 @@ export const NO_CREDENTIALS_MESSAGE =
  * Everything the store does to the outside world. Injected so the policy can be
  * tested without a real `claude`, real files or real waiting.
  */
+export interface RefreshLock {
+    release(): Promise<void>
+}
+
 export interface CredentialStoreDeps {
     /** Read the credentials a source currently holds. */
     readSource(source: string): ClaudeCredentials | null
@@ -54,7 +53,7 @@ export interface CredentialStoreDeps {
      */
     stampSource(source: string): string | null
     /** Try to take the machine-wide refresh lock; null when held elsewhere. */
-    acquireRefreshLock(): FileLock | null
+    acquireRefreshLock(): Promise<RefreshLock | null>
     /** Delegate a refresh to the Claude CLI. */
     runClaudeRefresh(): Promise<void>
     /** Read the shared record of a refresh that achieved nothing. */
@@ -196,12 +195,12 @@ export class CredentialStore {
     private async delegateRefresh(source: string): Promise<ClaudeCredentials> {
         const deadline = this.deps.now() + LOCK_WAIT_MS
         for (;;) {
-            const lock = this.deps.acquireRefreshLock()
+            const lock = await this.deps.acquireRefreshLock()
             if (lock) {
                 try {
                     return await this.refreshUnderLock(source)
                 } finally {
-                    lock.release()
+                    await lock.release()
                 }
             }
 
@@ -229,10 +228,37 @@ export class CredentialStore {
             return before.credentials
         }
 
+        // It may also have learned that refreshing this exact state achieves
+        // nothing. Checking only before queueing for the lock would let every
+        // waiting process repeat the same futile CLI run in turn.
+        const stateBefore = stateOf(before, this.deps.now())
+        const marker = this.deps.readFutileRefresh()
+        if (
+            marker?.source === source &&
+            marker.state === stateBefore.identity
+        ) {
+            log("refresh_skipped_futile", {
+                source,
+                usable: stateBefore.usable,
+                underLock: true,
+            })
+            if (stateBefore.usable && before.credentials) {
+                return before.credentials
+            }
+            throw new Error(LOGIN_EXPIRED_MESSAGE)
+        }
+
         log("refresh_started", { source })
         try {
             await this.deps.runClaudeRefresh()
         } catch (err) {
+            if (err instanceof ClaudeCliUnavailable) {
+                // The CLI never ran, so this says nothing about the login:
+                // recording it would suppress refreshes for a state that was
+                // never actually tried.
+                log("refresh_cli_unavailable", { source, error: err.message })
+                throw new Error(CLAUDE_UNAVAILABLE_MESSAGE, { cause: err })
+            }
             // A failing CLI can still have refreshed the credentials, so the
             // re-read below decides, not this error.
             log("refresh_command_failed", {

@@ -1,12 +1,14 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 import {
+    CLAUDE_UNAVAILABLE_MESSAGE,
     CredentialStore,
     LOGIN_EXPIRED_MESSAGE,
     MIN_VALIDITY_MS,
     REFRESH_BUSY_MESSAGE,
     type CredentialStoreDeps,
 } from "./credential-store.ts"
+import { ClaudeCliUnavailable } from "./claude-cli.ts"
 import type { ClaudeCredentials } from "./keychain.ts"
 import type { FutileRefresh } from "./futile-refresh.ts"
 
@@ -53,11 +55,11 @@ function makeWorld(initial: ClaudeCredentials | null) {
             return world.stored
         },
         stampSource: () => world.stamp,
-        acquireRefreshLock: () => {
+        acquireRefreshLock: async () => {
             if (world.lockHeldByOther) return null
             world.lockedByUs = true
             return {
-                release: () => {
+                release: async () => {
                     world.lockedByUs = false
                 },
             }
@@ -260,4 +262,45 @@ test("a transient lock timeout is not remembered as a failed login", async () =>
         message: REFRESH_BUSY_MESSAGE,
     })
     assert.equal(world.marker, null)
+})
+
+test("a waiter does not repeat a futile refresh the holder already tried", async () => {
+    const { world, deps, store } = makeWorld(EXPIRED)
+    world.lockHeldByOther = true
+    // The holder runs `claude`, learns it changes nothing, and releases.
+    let ticks = 0
+    const sleep = deps.sleep
+    deps.sleep = async (ms) => {
+        await sleep(ms)
+        if (++ticks === 2) {
+            world.marker = { source: SOURCE, state: `${world.stamp}|expired` }
+            world.lockHeldByOther = false
+        }
+    }
+
+    await assert.rejects(store.ensureFresh(SOURCE), {
+        message: LOGIN_EXPIRED_MESSAGE,
+    })
+    assert.equal(world.refreshRuns, 0, "the CLI must not run a second time")
+})
+
+test("an unrunnable claude CLI is reported as such and not remembered", async () => {
+    const { world, deps, store } = makeWorld(EXPIRED)
+    deps.runClaudeRefresh = async () => {
+        world.refreshRuns++
+        throw new ClaudeCliUnavailable("spawn claude ENOENT")
+    }
+
+    await assert.rejects(store.ensureFresh(SOURCE), {
+        message: CLAUDE_UNAVAILABLE_MESSAGE,
+    })
+    assert.equal(world.marker, null, "a CLI that never ran proves nothing")
+    assert.equal(world.lockedByUs, false)
+
+    // The next attempt must try again rather than stay silent.
+    deps.runClaudeRefresh = async () => {
+        world.refreshRuns++
+        world.write(FRESH)
+    }
+    assert.equal((await store.ensureFresh(SOURCE)).accessToken, "fresh")
 })

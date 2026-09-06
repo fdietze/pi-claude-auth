@@ -6,7 +6,14 @@ import { tmpdir } from "node:os"
  * round trip is usually well under 20s; beyond a minute the CLI is stuck and
  * killing it is better than blocking the caller further.
  */
-const CLAUDE_TIMEOUT_MS = 60_000
+export const CLAUDE_TIMEOUT_MS = 60_000
+
+/**
+ * The CLI could not be started at all (not installed, not on PATH, not
+ * executable). Distinct from a CLI that ran and failed, because it says nothing
+ * about the state of the login.
+ */
+export class ClaudeCliUnavailable extends Error {}
 
 /**
  * Make the Claude CLI refresh its own OAuth credentials.
@@ -29,8 +36,14 @@ export function refreshViaClaudeCli(): Promise<void> {
             env: { ...process.env, TERM: "dumb" },
             stdio: "ignore",
             timeout: CLAUDE_TIMEOUT_MS,
+            // SIGKILL cannot be ignored. A CLI that swallowed SIGTERM would
+            // never emit "close", leaving this promise — and with it the
+            // machine-wide refresh lock — pending forever.
+            killSignal: "SIGKILL",
         })
-        child.on("error", reject)
+        child.on("error", (err) =>
+            reject(new ClaudeCliUnavailable(err.message)),
+        )
         child.on("close", (code, signal) => {
             if (code === 0) resolve()
             else reject(new Error(`claude exited with ${signal ?? code}`))
