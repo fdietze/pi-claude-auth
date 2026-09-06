@@ -2,6 +2,7 @@ import type {
     ExtensionAPI,
     ProviderConfig,
 } from "@earendil-works/pi-coding-agent"
+import { seedAnthropicCredential, toPiOAuthCredential } from "./auth-json.ts"
 import {
     getActiveCredentials,
     getLoginProblem,
@@ -11,7 +12,6 @@ import {
     refreshActiveCredentials,
     saveAccountSource,
     setActiveAccountSource,
-    syncAuthJson,
     type ClaudeCredentials,
 } from "./credentials.ts"
 import { readAllClaudeAccounts, type ClaudeAccount } from "./keychain.ts"
@@ -19,9 +19,9 @@ import { initLogger, log } from "./logger.ts"
 import { buildUserAgent } from "./signing.ts"
 import { injectBillingHeader } from "./transforms.ts"
 
+export { seedAnthropicCredential } from "./auth-json.ts"
 export {
     getActiveCredentials,
-    syncAuthJson,
     refreshAccountsList,
     type ClaudeCredentials,
 } from "./credentials.ts"
@@ -37,11 +37,10 @@ const PROVIDER_ID = "anthropic"
 const PROVIDER_LABEL = "Claude Code (subscription)"
 
 function toOAuthCreds(creds: ClaudeCredentials): OAuthCreds {
-    return {
-        access: creds.accessToken,
-        refresh: creds.refreshToken,
-        expires: creds.expiresAt,
-    }
+    // toPiOAuthCredential is the single place that decides what pi may see of
+    // a Claude Code credential; it never includes the real refresh token.
+    const { access, refresh, expires } = toPiOAuthCredential(creds)
+    return { access, refresh, expires }
 }
 
 /**
@@ -107,7 +106,16 @@ const extension = async (pi: ExtensionAPI): Promise<void> => {
     // Expired credentials are seeded too: pi then calls refreshToken below,
     // which delegates the refresh to the Claude CLI.
     const initialCreds = getActiveCredentials()
-    if (initialCreds) syncAuthJson(initialCreds)
+    if (initialCreds) {
+        try {
+            await seedAnthropicCredential(initialCreds)
+        } catch (err) {
+            console.warn(
+                "pi-claude-auth: Failed to write auth.json:",
+                err instanceof Error ? err.message : String(err),
+            )
+        }
+    }
 
     const oauth: OAuthConfig = {
         name: PROVIDER_LABEL,
@@ -149,7 +157,6 @@ const extension = async (pi: ExtensionAPI): Promise<void> => {
             saveAccountSource(chosen.source)
 
             const creds = getActiveCredentials() ?? chosen.credentials
-            syncAuthJson(creds)
             log("login", { source: chosen.source, label: chosen.label })
             return toOAuthCreds(creds)
         },

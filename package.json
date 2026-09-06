@@ -43,9 +43,13 @@
         "format": "oxfmt --write .",
         "prepublishOnly": "pnpm run build && pnpm test"
     },
+    "dependencies": {
+        "proper-lockfile": "^4.1.2"
+    },
     "devDependencies": {
         "@earendil-works/pi-coding-agent": "^0.85.1",
         "@types/node": "^25.5.0",
+        "@types/proper-lockfile": "^4.1.4",
         "oxfmt": "0.41.0",
         "oxlint": "1.56.0",
         "typescript": "^5.0.0"
