@@ -8,6 +8,7 @@ import {
     type CredentialStoreDeps,
 } from "./credential-store.ts"
 import type { ClaudeCredentials } from "./keychain.ts"
+import type { UnusableLogin } from "./login-marker.ts"
 
 const SOURCE = "file"
 const NOW = 1_700_000_000_000
@@ -33,6 +34,7 @@ function makeWorld(initial: ClaudeCredentials | null) {
         refreshRuns: 0,
         lockHeldByOther: false,
         lockedByUs: false,
+        marker: null as UnusableLogin | null,
         slept: 0,
         now: NOW,
         /** What the delegated `claude` run does to the source. */
@@ -63,6 +65,10 @@ function makeWorld(initial: ClaudeCredentials | null) {
         runClaudeRefresh: async () => {
             world.refreshRuns++
             world.onRefresh()
+        },
+        readUnusableLogin: () => world.marker,
+        writeUnusableLogin: (marker) => {
+            world.marker = marker
         },
         now: () => world.now,
         sleep: async (ms) => {
@@ -188,4 +194,48 @@ test("ensureFresh: a failing claude run still uses what it wrote", async () => {
 
     const result = await store.ensureFresh(SOURCE)
     assert.equal(result.accessToken, "fresh")
+})
+
+test("a failed login is remembered and retried only after the source changes", async () => {
+    const { world, store } = makeWorld(EXPIRED)
+    world.onRefresh = () => {} // `claude` cannot log in anymore
+
+    await assert.rejects(store.ensureFresh(SOURCE), {
+        message: LOGIN_EXPIRED_MESSAGE,
+    })
+    assert.equal(world.refreshRuns, 1)
+    assert.equal(world.marker?.source, SOURCE)
+
+    // Same source state: no second `claude`, no waiting, just the message.
+    await assert.rejects(store.ensureFresh(SOURCE), {
+        message: LOGIN_EXPIRED_MESSAGE,
+    })
+    assert.equal(world.refreshRuns, 1)
+    assert.equal(store.loginProblem(SOURCE), LOGIN_EXPIRED_MESSAGE)
+
+    // The user ran `claude` and logged in: the source changed, so retry.
+    world.onRefresh = () => world.write(FRESH)
+    world.write(creds(NOW - 500, "still-expired-but-new"))
+    assert.equal(store.loginProblem(SOURCE), null)
+
+    const result = await store.ensureFresh(SOURCE)
+    assert.equal(result.accessToken, "fresh")
+    assert.equal(world.refreshRuns, 2)
+    assert.equal(world.marker, null, "successful refresh clears the record")
+})
+
+test("a marker from another account does not block this one", async () => {
+    const { world, store } = makeWorld(FRESH)
+    world.marker = { source: "Claude Code-credentials", stamp: world.stamp }
+    assert.equal(store.loginProblem(SOURCE), null)
+})
+
+test("a transient lock timeout is not remembered as a failed login", async () => {
+    const { world, store } = makeWorld(EXPIRED)
+    world.lockHeldByOther = true
+
+    await assert.rejects(store.ensureFresh(SOURCE), {
+        message: REFRESH_BUSY_MESSAGE,
+    })
+    assert.equal(world.marker, null)
 })

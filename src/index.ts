@@ -4,6 +4,7 @@ import type {
 } from "@earendil-works/pi-coding-agent"
 import {
     getActiveCredentials,
+    getLoginProblem,
     initAccounts,
     loadPersistedAccountSource,
     refreshAccountsList,
@@ -163,6 +164,11 @@ const extension = async (pi: ExtensionAPI): Promise<void> => {
 
         getApiKey(credentials: OAuthCreds): string {
             // Read-only: pi has already refreshed if the token was near expiry.
+            // pi surfaces a throw here as "OAuth auth derivation failed for
+            // anthropic: <message>", which beats handing out a token we know is
+            // dead and letting the user decode an opaque 401.
+            const problem = getLoginProblem()
+            if (problem) throw new Error(problem)
             return getActiveCredentials()?.accessToken ?? credentials.access
         },
     }
@@ -175,6 +181,14 @@ const extension = async (pi: ExtensionAPI): Promise<void> => {
     pi.registerProvider(PROVIDER_ID, {
         oauth,
         headers: { "user-agent": buildUserAgent() },
+    })
+
+    // Tell the user once per session when the Claude Code login is dead. The
+    // check is a stat plus a small file read: no subprocess, no network, no
+    // timer. Nothing retries until Claude Code writes new credentials.
+    pi.on("session_start", async (_event, ctx) => {
+        const problem = getLoginProblem()
+        if (problem) ctx.ui.notify(`pi-claude-auth: ${problem}`, "warning")
     })
 
     // Inject the Claude Code billing header so requests bill against the

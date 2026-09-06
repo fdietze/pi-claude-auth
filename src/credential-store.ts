@@ -1,5 +1,6 @@
 import type { FileLock } from "./file-lock.ts"
 import type { ClaudeCredentials } from "./keychain.ts"
+import type { UnusableLogin } from "./login-marker.ts"
 import { log } from "./logger.ts"
 
 /**
@@ -56,6 +57,10 @@ export interface CredentialStoreDeps {
     acquireRefreshLock(): FileLock | null
     /** Delegate a refresh to the Claude CLI. */
     runClaudeRefresh(): Promise<void>
+    /** Read the shared record of a login that could not be refreshed. */
+    readUnusableLogin(): UnusableLogin | null
+    /** Record a failed login, or clear the record when passed null. */
+    writeUnusableLogin(marker: UnusableLogin | null): void
     now(): number
     sleep(ms: number): Promise<void>
 }
@@ -105,6 +110,19 @@ export class CredentialStore {
     }
 
     /**
+     * Message to show when a recorded refresh failure still applies to the
+     * source's current state, null otherwise. Costs one stat and one small file
+     * read, so it is safe to call on every session start and every request.
+     */
+    loginProblem(source: string): string | null {
+        const marker = this.deps.readUnusableLogin()
+        if (!marker || marker.source !== source) return null
+        return marker.stamp === this.currentIdentity(source)
+            ? LOGIN_EXPIRED_MESSAGE
+            : null
+    }
+
+    /**
      * Credentials valid for at least MIN_VALIDITY_MS, delegating a refresh to
      * the Claude CLI when needed. Throws with an actionable message when no
      * usable credentials can be obtained.
@@ -124,7 +142,27 @@ export class CredentialStore {
             source,
             expiresAt: current.credentials?.expiresAt,
         })
+
+        // A login that already failed for exactly this credential state stays
+        // failed until the user logs in again, so spend nothing on it.
+        const marker = this.deps.readUnusableLogin()
+        if (marker?.source === source && marker.stamp === identityOf(current)) {
+            log("refresh_skipped_unusable_login", { source })
+            throw new Error(LOGIN_EXPIRED_MESSAGE)
+        }
+
         return this.delegateRefresh(source)
+    }
+
+    /**
+     * Identity of the source's current state, without reading its contents when
+     * a stamp is available.
+     */
+    private currentIdentity(source: string): string {
+        const stamp = this.deps.stampSource(source)
+        if (stamp !== null) return stamp
+        const cached = this.snapshots.get(source)
+        return identityOf(cached ?? this.reload(source))
     }
 
     private isFresh(creds: ClaudeCredentials): boolean {
@@ -194,6 +232,7 @@ export class CredentialStore {
         const after = this.reload(source)
         if (after.credentials && this.isFresh(after.credentials)) {
             log("refresh_success", { source })
+            this.deps.writeUnusableLogin(null)
             return after.credentials
         }
 
@@ -201,8 +240,20 @@ export class CredentialStore {
             source,
             expiresAt: after.credentials?.expiresAt,
         })
+        this.deps.writeUnusableLogin({ source, stamp: identityOf(after) })
         throw new Error(
             after.credentials ? LOGIN_EXPIRED_MESSAGE : NO_CREDENTIALS_MESSAGE,
         )
     }
+}
+
+/**
+ * What a failed refresh is remembered by: the cheap stamp when the source has
+ * one, otherwise the expiry, which changes as soon as Claude Code writes new
+ * credentials.
+ */
+function identityOf(snapshot: Snapshot): string {
+    return (
+        snapshot.stamp ?? `expires:${snapshot.credentials?.expiresAt ?? "none"}`
+    )
 }

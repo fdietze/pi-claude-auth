@@ -22,6 +22,7 @@ import {
     type ClaudeAccount,
     type ClaudeCredentials,
 } from "./keychain.ts"
+import { readUnusableLogin, writeUnusableLogin } from "./login-marker.ts"
 import { log } from "./logger.ts"
 import {
     getAuthJsonPath,
@@ -62,6 +63,8 @@ const store = new CredentialStore({
             staleMs: REFRESH_LOCK_STALE_MS,
         }),
     runClaudeRefresh: refreshViaClaudeCli,
+    readUnusableLogin,
+    writeUnusableLogin,
     now: Date.now,
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 })
@@ -144,6 +147,17 @@ export async function refreshActiveCredentials(): Promise<ClaudeCredentials> {
     const account = getActiveAccount()
     if (!account) throw new Error(NO_CREDENTIALS_MESSAGE)
     return store.ensureFresh(account.source)
+}
+
+/**
+ * Message for the user when the stored Claude Code login is known to be
+ * unusable and nothing has changed since, null otherwise. Never spawns
+ * anything.
+ */
+export function getLoginProblem(): string | null {
+    const account = getActiveAccount()
+    if (!account) return null
+    return store.loginProblem(account.source)
 }
 
 function syncToPath(authPath: string, creds: ClaudeCredentials): void {
