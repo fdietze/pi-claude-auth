@@ -1,7 +1,5 @@
 import type {
     ExtensionAPI,
-    ExtensionContext,
-    OAuthCredential,
     ProviderConfig,
 } from "@earendil-works/pi-coding-agent"
 import {
@@ -48,46 +46,14 @@ function toOAuthCreds(creds: ClaudeCredentials): OAuthCreds {
 }
 
 /**
- * Inject the active Claude Code credentials into pi's in-memory AuthStorage.
- *
- * pi builds its AuthStorage at startup, before extensions load, so writing
- * auth.json on disk alone is not picked up for the current session (and an
- * existing ANTHROPIC_API_KEY env var would shadow it). Setting the credential
- * directly on the live AuthStorage makes pi use the Claude Code OAuth token
- * immediately — and AuthStorage persists it to auth.json too.
- */
-function applyCredential(ctx: ExtensionContext): boolean {
-    const creds = getCachedCredentials()
-    if (!creds) return false
-
-    const credential: OAuthCredential = {
-        type: "oauth",
-        access: creds.accessToken,
-        refresh: creds.refreshToken,
-        expires: creds.expiresAt,
-    }
-
-    try {
-        ctx.modelRegistry.authStorage.set(PROVIDER_ID, credential)
-        log("credential_applied", { provider: PROVIDER_ID })
-        return true
-    } catch (err) {
-        log("credential_apply_error", {
-            error: err instanceof Error ? err.message : String(err),
-        })
-        return false
-    }
-}
-
-/**
  * pi-claude-auth extension.
  *
  * Reads your existing Claude Code OAuth credentials (macOS Keychain or
  * `~/.claude/.credentials.json`) and makes pi authenticate as Claude Code with
  * no separate login:
  *
- * - Injects the credentials into pi's live AuthStorage on every session start
- *   (and seeds auth.json) so they take priority over any ANTHROPIC_API_KEY.
+ * - Seeds the credentials into pi's auth.json. A stored credential outranks
+ *   ANTHROPIC_API_KEY in pi, so this is all it takes to authenticate.
  * - Overrides the `anthropic` provider's OAuth lifecycle: refresh goes through
  *   Anthropic's OAuth endpoint (with Claude CLI fallback) and rotated tokens
  *   are written back to the Keychain / credentials file. Multiple accounts are
@@ -233,14 +199,6 @@ const extension = async (pi: ExtensionAPI): Promise<void> => {
     pi.registerProvider(PROVIDER_ID, {
         oauth,
         headers: { "user-agent": buildUserAgent() },
-    })
-
-    // Inject the live credential into pi's AuthStorage on every session start.
-    // This is what makes pi actually use the Claude Code OAuth token (and
-    // therefore enter Claude Code stealth mode) instead of falling back to an
-    // ANTHROPIC_API_KEY env var or reporting "No API key found".
-    pi.on("session_start", async (_event, ctx) => {
-        applyCredential(ctx)
     })
 
     // Inject the Claude Code billing header so requests bill against the

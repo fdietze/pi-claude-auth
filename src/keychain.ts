@@ -311,7 +311,9 @@ export function readAllClaudeAccounts(): ClaudeAccount[] {
     // Several items can hold credentials for the same Claude account, one of
     // them stale. Ordering by expiry makes the freshest the default account, so
     // a leftover expired item can no longer shadow a valid login.
-    rawAccounts.sort((a, b) => b.credentials.expiresAt - a.credentials.expiresAt)
+    rawAccounts.sort(
+        (a, b) => b.credentials.expiresAt - a.credentials.expiresAt,
+    )
 
     if (rawAccounts.length === 0) {
         const creds = readCredentialsFile()

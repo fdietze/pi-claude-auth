@@ -12,6 +12,7 @@
     "bracketSameLine": false,
     "bracketSpacing": true,
     "ignorePatterns": [
+        ".corral",
         "CHANGELOG.md",
         "AGENTS.md",
         "CLAUDE.md",

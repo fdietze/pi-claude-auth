@@ -178,7 +178,7 @@ one account is found, the picker is skipped.
 | Not working on Linux/Windows       | Ensure `~/.claude/.credentials.json` exists. Run `claude` to create it                                           |
 | Keychain access denied             | Grant access when macOS prompts you                                                                              |
 | Keychain read timed out            | Restart Keychain Access (can happen on macOS Tahoe)                                                              |
-| Package not updating               | Reinstall at the ref: `pi install git:github.com/fdietze/pi-claude-auth@v0.3.0`                            |
+| Package not updating               | Reinstall at the ref: `pi install git:github.com/fdietze/pi-claude-auth@v0.3.0`                                  |
 
 ### Claude Code version pinning
 

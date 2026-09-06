@@ -45,7 +45,7 @@
         "prepublishOnly": "pnpm run build && pnpm test"
     },
     "devDependencies": {
-        "@earendil-works/pi-coding-agent": "latest",
+        "@earendil-works/pi-coding-agent": "^0.85.1",
         "@types/node": "^25.5.0",
         "oxfmt": "0.41.0",
         "oxlint": "1.56.0",
