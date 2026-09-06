@@ -2,7 +2,11 @@ import type {
     ExtensionAPI,
     ProviderConfig,
 } from "@earendil-works/pi-coding-agent"
-import { seedAnthropicCredential, toPiOAuthCredential } from "./auth-json.ts"
+import {
+    removeSeededCredential,
+    seedAnthropicCredential,
+    toPiOAuthCredential,
+} from "./auth-json.ts"
 import {
     getActiveCredentials,
     getLoginProblem,
@@ -84,6 +88,10 @@ const extension = async (pi: ExtensionAPI): Promise<void> => {
     if (accounts.length === 0) {
         log("extension_init_no_accounts", { reason: "no credentials found" })
         console.warn(`pi-claude-auth: ${NO_CREDENTIALS_MESSAGE}`)
+        // Drop an entry seeded by an earlier run: without Claude Code
+        // credentials nothing can refresh it, and leaving it in place would
+        // shadow whatever else the user has configured for anthropic.
+        await removeSeededCredential().catch(() => {})
         return
     }
 

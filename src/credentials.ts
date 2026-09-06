@@ -131,7 +131,45 @@ export function getActiveCredentials(): ClaudeCredentials | null {
 export async function refreshActiveCredentials(): Promise<ClaudeCredentials> {
     const account = getActiveAccount()
     if (!account) throw new Error(NO_CREDENTIALS_MESSAGE)
-    return store.ensureFresh(account.source)
+    try {
+        return await store.ensureFresh(account.source)
+    } catch (err) {
+        // The account list is a snapshot from startup. On macOS, logging in
+        // again can make Claude Code write a *different* Keychain item, which
+        // would leave this process pinned to a dead one for its whole life.
+        // Re-reading the list costs a subprocess, so it happens only here, on a
+        // path that has already failed.
+        const replacement = pickUsableAccount(
+            refreshAccountsList(),
+            account.source,
+            Date.now(),
+        )
+        if (!replacement) throw err
+        log("account_rediscovered", {
+            previousSource: account.source,
+            newSource: replacement.source,
+        })
+        // Deliberately not persisted: this is a fallback for an unusable
+        // account, not the user's choice in `/login`.
+        setActiveAccountSource(replacement.source)
+        return store.ensureFresh(replacement.source)
+    }
+}
+
+/**
+ * The freshest still-valid account other than the one that just failed, or null
+ * when there is none. Exported for tests.
+ */
+export function pickUsableAccount(
+    accounts: ClaudeAccount[],
+    failedSource: string,
+    now: number,
+): ClaudeAccount | null {
+    return (
+        accounts.find(
+            (a) => a.source !== failedSource && a.credentials.expiresAt > now,
+        ) ?? null
+    )
 }
 
 /**

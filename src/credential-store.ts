@@ -101,9 +101,9 @@ export class CredentialStore {
     read(source: string): ClaudeCredentials | null {
         const cached = this.snapshots.get(source)
         if (cached && cached.stamp !== null) {
-            // A source with a stamp (the credentials file) is re-read only when
-            // it actually changed. Keychain sources have no stamp and stay on
-            // the in-memory copy until an expiry forces a re-read.
+            // A source with a stamp (the credentials file) is re-read only
+            // when it actually changed. Keychain sources have no stamp, so this
+            // read never re-reads them; ensureFresh does, on expiry.
             if (this.deps.stampSource(source) === cached.stamp) {
                 return cached.credentials
             }

@@ -3,7 +3,11 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, test } from "node:test"
-import { seedAnthropicCredential, toPiOAuthCredential } from "./auth-json.ts"
+import {
+    removeSeededCredential,
+    seedAnthropicCredential,
+    toPiOAuthCredential,
+} from "./auth-json.ts"
 
 let dir = ""
 let authPath = ""
@@ -90,4 +94,36 @@ test("seedAnthropicCredential: refuses to rebuild a corrupt auth.json", async ()
     writeFileSync(authPath, corrupt, "utf-8")
     await assert.rejects(seedAnthropicCredential(CREDS))
     assert.equal(readFileSync(authPath, "utf-8"), corrupt)
+})
+
+test("removeSeededCredential: drops our entry but keeps other providers", async () => {
+    writeFileSync(
+        authPath,
+        JSON.stringify({ openai: { type: "api_key", key: "sk-test" } }),
+        "utf-8",
+    )
+    await seedAnthropicCredential(CREDS)
+    await removeSeededCredential()
+
+    const parsed = JSON.parse(readFileSync(authPath, "utf-8"))
+    assert.equal("anthropic" in parsed, false)
+    assert.deepEqual(parsed.openai, { type: "api_key", key: "sk-test" })
+})
+
+test("removeSeededCredential: never touches a credential we did not write", async () => {
+    const foreign = {
+        anthropic: {
+            type: "oauth",
+            access: "a",
+            refresh: "someone-elses-refresh-token",
+            expires: 1,
+        },
+    }
+    writeFileSync(authPath, JSON.stringify(foreign), "utf-8")
+    await removeSeededCredential()
+    assert.deepEqual(JSON.parse(readFileSync(authPath, "utf-8")), foreign)
+})
+
+test("removeSeededCredential: no-op without an auth.json", async () => {
+    await removeSeededCredential()
 })

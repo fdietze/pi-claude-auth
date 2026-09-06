@@ -89,3 +89,42 @@ function isSameEntry(existing: unknown, entry: PiOAuthCredential): boolean {
         current.expires === entry.expires
     )
 }
+
+/**
+ * Remove the entry we seeded, if it is still ours.
+ *
+ * A seeded credential outranks ANTHROPIC_API_KEY, and it carries an empty
+ * refresh token because only this extension's refresh hook may refresh it. Left
+ * behind once the extension no longer supplies credentials, pi's built-in
+ * anthropic OAuth would try to redeem that empty token and fail forever, hiding
+ * an otherwise working API key. The `refresh: ""` shape identifies our own
+ * entry, so a real credential from another source is never touched.
+ */
+export async function removeSeededCredential(): Promise<void> {
+    const path = getAuthJsonPath()
+    if (!existsSync(path)) return
+
+    const release = await lockfile.lock(path, {
+        realpath: false,
+        stale: 30_000,
+        retries: { retries: 5, minTimeout: 50, maxTimeout: 1_000 },
+    })
+    try {
+        const auth = JSON.parse(readFileSync(path, "utf-8") || "{}") as Record<
+            string,
+            unknown
+        >
+        const existing = auth.anthropic as
+            | Partial<PiOAuthCredential>
+            | undefined
+        if (existing?.type !== "oauth" || existing.refresh !== "") return
+        delete auth.anthropic
+        writeFileSync(path, JSON.stringify(auth, null, 2), {
+            encoding: "utf-8",
+            mode: 0o600,
+        })
+        log("removed_seeded_credential", { path })
+    } finally {
+        await release()
+    }
+}

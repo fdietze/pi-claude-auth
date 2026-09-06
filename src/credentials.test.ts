@@ -5,6 +5,7 @@ import { join } from "node:path"
 import { afterEach, beforeEach, test } from "node:test"
 import {
     getActiveCredentials,
+    pickUsableAccount,
     initAccounts,
     loadPersistedAccountSource,
     saveAccountSource,
@@ -66,4 +67,30 @@ test("account source persistence round-trips", () => {
     assert.equal(loadPersistedAccountSource(), null)
     saveAccountSource("Claude Code-credentials")
     assert.equal(loadPersistedAccountSource(), "Claude Code-credentials")
+})
+
+test("pickUsableAccount: prefers a usable account over the one that failed", () => {
+    const accounts = [
+        {
+            label: "Claude Max",
+            source: "svc\u0001old",
+            credentials: { accessToken: "a", refreshToken: "r", expiresAt: 1 },
+        },
+        {
+            label: "Claude Max 2",
+            source: "svc\u0001new",
+            credentials: {
+                accessToken: "b",
+                refreshToken: "r",
+                expiresAt: 10_000,
+            },
+        },
+    ]
+    assert.equal(
+        pickUsableAccount(accounts, "svc\u0001old", 5_000)?.source,
+        "svc\u0001new",
+    )
+    // Nothing usable elsewhere: the caller must keep the original failure.
+    assert.equal(pickUsableAccount(accounts, "svc\u0001old", 20_000), null)
+    assert.equal(pickUsableAccount(accounts, "svc\u0001new", 5_000), null)
 })

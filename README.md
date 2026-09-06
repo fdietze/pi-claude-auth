@@ -122,9 +122,10 @@ There are several good community projects solving Anthropic auth for pi (see
   credentials. pi only reads them and asks the `claude` CLI to refresh, so the
   single-use refresh token is never redeemed twice (which would revoke the
   session and log you out of Claude Code).
-- **One refresh per machine** — a lock file serializes the delegated refresh
-  across all pi processes, so running many pi instances cannot start a storm of
-  `claude` refreshes.
+- **One refresh at a time, machine-wide** — a lock serializes the delegated
+  refresh across all pi processes, and a refresh that changed nothing is not
+  repeated, so running many pi instances cannot start a storm of `claude`
+  refreshes.
 
 If you prefer a browser-based OAuth flow or need relay/caching features,
 check out [pi-anthropic-oauth](https://github.com/leohenon/pi-anthropic-oauth)
@@ -299,7 +300,16 @@ expires }` under `anthropic`, using the same `proper-lockfile` protocol pi
 
 A delegated refresh refreshes whichever account the `claude` CLI itself is
 logged into. If you selected a different Keychain account via `/login` and it
-expires, pi cannot refresh it and asks you to run `claude` for that account.
+expires, pi cannot refresh it: it falls back to another Claude Code account that
+is still valid (for this session only, your `/login` choice is kept), and
+otherwise asks you to run `claude` for that account.
+
+### Uninstalling
+
+The extension seeds an `anthropic` entry in `~/.pi/agent/auth.json`, and a
+stored credential outranks `ANTHROPIC_API_KEY`. Run `/logout` and pick
+`anthropic` after removing the package, or start pi once with the extension
+still installed and Claude Code logged out — it then removes its own entry.
 
 ## Acknowledgements
 

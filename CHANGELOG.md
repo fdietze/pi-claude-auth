@@ -31,12 +31,18 @@ Requires pi 0.85 or newer.
 ### Changed
 
 - Credentials are re-read when the file's mtime or size changed, replacing the
-  30-second TTL cache. Keychain sources are re-read on expiry.
+  30-second TTL cache. Keychain sources have no cheap change check and are
+  re-read when a refresh is considered.
 - Refresh no longer happens on the request path: `getApiKey` only reads, and pi
   drives refreshes through `oauth.refreshToken`.
 - Dropped the 5-minute `auth.json` sync timer and the credential write-back to
   the Keychain / credentials file (`claude` writes them now).
 - Removed the `validate:oauth` script and its `just` targets.
+- When no Claude Code credentials exist at all, the seeded `anthropic` entry is
+  removed from `auth.json` instead of shadowing the user's other Anthropic auth
+  with a credential nothing can refresh.
+- If the active macOS account turns out unusable, the account list is re-read
+  once and a still-valid Claude Code account is used for the session.
 
 ## 0.3.0
 
