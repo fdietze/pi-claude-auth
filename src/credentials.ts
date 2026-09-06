@@ -11,9 +11,8 @@ import {
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import {
+    readAccountCredentials,
     readAllClaudeAccounts,
-    refreshAccount,
-    writeBackCredentials,
     type ClaudeAccount,
     type ClaudeCredentials,
 } from "./keychain.ts"
@@ -168,95 +167,6 @@ export function syncAuthJson(creds: ClaudeCredentials): void {
     }
 }
 
-export const OAUTH_TOKEN_URL = "https://claude.ai/v1/oauth/token"
-export const OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-
-/**
- * Parse a raw OAuth token response into ClaudeCredentials.
- * Returns null if the response is missing a valid access_token.
- * Defaults expires_in to 36000s (10h) to match observed Claude token lifetime.
- */
-export function parseOAuthResponse(
-    raw: string,
-    currentRefreshToken: string,
-    now: number = Date.now(),
-): ClaudeCredentials | null {
-    let data: {
-        access_token?: string
-        refresh_token?: string
-        expires_in?: number
-        error?: string
-    }
-    try {
-        data = JSON.parse(raw)
-    } catch {
-        return null
-    }
-
-    if (!data.access_token) return null
-
-    return {
-        accessToken: data.access_token,
-        refreshToken: data.refresh_token ?? currentRefreshToken,
-        expiresAt: now + (data.expires_in ?? 36_000) * 1000,
-    }
-}
-
-export function refreshViaOAuth(
-    refreshToken: string,
-): ClaudeCredentials | null {
-    // Use a Node subprocess to perform the HTTP request synchronously.
-    // The refresh token is passed via stdin to avoid exposure in process args.
-    const script = `
-    process.stdin.resume();
-    let input = '';
-    process.stdin.on('data', c => input += c);
-    process.stdin.on('end', () => {
-      const body = new URLSearchParams({
-        grant_type: 'refresh_token',
-        client_id: '${OAUTH_CLIENT_ID}',
-        refresh_token: input.trim()
-      });
-      fetch('${OAUTH_TOKEN_URL}', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: body.toString()
-      })
-      .then(r => { if (!r.ok) throw new Error(String(r.status)); return r.json(); })
-      .then(d => { process.stdout.write(JSON.stringify(d)); })
-      .catch(e => { process.stdout.write(JSON.stringify({ error: String(e) })); process.exit(1); });
-    });
-  `
-
-    try {
-        log("refresh_started", { source: "oauth" })
-        const result = execFileSync(process.execPath, ["-e", script], {
-            input: refreshToken,
-            timeout: 15_000,
-            encoding: "utf-8",
-            stdio: ["pipe", "pipe", "ignore"],
-        })
-
-        const creds = parseOAuthResponse(result, refreshToken)
-        if (!creds) {
-            log("refresh_failed", {
-                source: "oauth",
-                error: "no access_token in response",
-            })
-            return null
-        }
-
-        log("refresh_success", { source: "oauth" })
-        return creds
-    } catch (err) {
-        log("refresh_failed", {
-            source: "oauth",
-            error: err instanceof Error ? err.message : String(err),
-        })
-        return null
-    }
-}
-
 function refreshViaCli(): void {
     const maxAttempts = 2
     for (let i = 0; i < maxAttempts; i++) {
@@ -292,10 +202,9 @@ export function refreshIfNeeded(
 
     // Pick up external updates to .credentials.json (e.g. the Claude CLI
     // refreshing in another process). Bounded by getCachedCredentials's 30s
-    // TTL. macOS keychain sources stay on the in-memory path; their state is
-    // mutated only by our own writeBackCredentials.
+    // TTL. macOS keychain sources stay on the in-memory path.
     if (target.source === "file") {
-        const onDisk = refreshAccount(target.source)
+        const onDisk = readAccountCredentials(target.source)
         if (onDisk) target.credentials = onDisk
     }
 
@@ -308,20 +217,9 @@ export function refreshIfNeeded(
         expiresIn: creds.expiresAt - Date.now(),
     })
 
-    // Try direct OAuth refresh first (zero LLM tokens consumed)
-    if (creds.refreshToken) {
-        const oauthCreds = refreshViaOAuth(creds.refreshToken)
-        if (oauthCreds && oauthCreds.expiresAt > Date.now() + 60_000) {
-            target.credentials = oauthCreds
-            writeBackCredentials(target.source, oauthCreds)
-            return oauthCreds
-        }
-    }
-
-    // Fall back to CLI-based refresh (consumes Haiku tokens)
-    log("refresh_fallback_cli", { source: target.source })
+    // Only the Claude CLI rotates the refresh token; pi delegates to it.
     refreshViaCli()
-    const refreshed = refreshAccount(target.source)
+    const refreshed = readAccountCredentials(target.source)
     if (refreshed && refreshed.expiresAt > Date.now() + 60_000) {
         target.credentials = refreshed
         return refreshed
@@ -336,12 +234,12 @@ export function refreshIfNeeded(
 }
 
 /**
- * Force a refresh of the active account's credentials and write the rotated
- * tokens back to storage. Used by pi's `oauth.refreshToken` hook, which is
- * invoked when the token stored in auth.json is at/near expiry.
+ * Get fresh credentials for the active account. Used by pi's
+ * `oauth.refreshToken` hook, which runs when the token stored in auth.json is
+ * at/near expiry.
  *
  * Re-reads the source first (the Claude CLI may have already rotated the
- * token), then falls back to a direct OAuth refresh.
+ * token), then delegates a refresh to the Claude CLI.
  */
 export function forceRefreshActiveCredentials(): ClaudeCredentials | null {
     const account = getActiveAccount()
@@ -350,7 +248,7 @@ export function forceRefreshActiveCredentials(): ClaudeCredentials | null {
     accountCacheMap.delete(account.source)
 
     // The on-disk/keychain source may already hold a fresher token.
-    const onDisk = refreshAccount(account.source)
+    const onDisk = readAccountCredentials(account.source)
     if (onDisk) account.credentials = onDisk
     if (account.credentials.expiresAt > Date.now() + 60_000) {
         accountCacheMap.set(account.source, {

@@ -29,14 +29,6 @@ format:
 clean:
     rm -rf dist
 
-# Live OAuth refresh (rotates token, writes back)
-validate-oauth: build
-    pnpm run validate:oauth
-
-# Dry-run OAuth refresh (no network request)
-validate-oauth-dry: build
-    pnpm run validate:oauth -- --dry-run
-
 # Lint + build + test
 all: lint build test
 

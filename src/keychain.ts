@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process"
-import { chmodSync, readFileSync, writeFileSync } from "node:fs"
+import { readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { log } from "./logger.ts"
@@ -328,135 +328,13 @@ export function readAllClaudeAccounts(): ClaudeAccount[] {
     }))
 }
 
-export function updateCredentialBlob(
-    existingJson: string,
-    newCreds: { accessToken: string; refreshToken: string; expiresAt: number },
-): string | null {
-    let parsed: Record<string, unknown>
-    try {
-        parsed = JSON.parse(existingJson)
-    } catch {
-        return null
-    }
-
-    const wrapper = parsed.claudeAiOauth as Record<string, unknown> | undefined
-    const target = wrapper ?? parsed
-
-    target.accessToken = newCreds.accessToken
-    target.refreshToken = newCreds.refreshToken
-    target.expiresAt = newCreds.expiresAt
-
-    return JSON.stringify(parsed)
-}
-
-function getKeychainAccountName(serviceName: string): string | null {
-    try {
-        const output = execFileSync(
-            "/usr/bin/security",
-            ["find-generic-password", "-s", serviceName],
-            {
-                timeout: 2000,
-                encoding: "utf-8",
-                stdio: ["pipe", "pipe", "pipe"],
-            },
-        )
-        const match = /"acct"<blob>="([^"]*)"/.exec(output)
-        if (match) {
-            log("keychain_account_name", {
-                service: serviceName,
-                account: match[1],
-            })
-            return match[1]
-        }
-        return null
-    } catch {
-        return null
-    }
-}
-
-export function writeBackCredentials(
+export function readAccountCredentials(
     source: string,
-    creds: ClaudeCredentials,
-): boolean {
-    const newCreds = {
-        accessToken: creds.accessToken,
-        refreshToken: creds.refreshToken,
-        expiresAt: creds.expiresAt,
-    }
-
-    if (source === "file") {
-        try {
-            const credPath = join(homedir(), ".claude", ".credentials.json")
-            const raw = readFileSync(credPath, "utf-8")
-            const updated = updateCredentialBlob(raw, newCreds)
-            if (!updated) return false
-            writeFileSync(credPath, updated, { encoding: "utf-8", mode: 0o600 })
-            if (process.platform !== "win32") {
-                chmodSync(credPath, 0o600)
-            }
-            log("writeback_success", { source })
-            return true
-        } catch {
-            log("writeback_failed", { source })
-            return false
-        }
-    }
-
-    if (process.platform === "darwin") {
-        try {
-            const ref = decodeSource(source)
-            const raw = readKeychainService(ref)
-            if (!raw) return false
-            const updated = updateCredentialBlob(raw, newCreds)
-            if (!updated) return false
-            // Discover the actual account name from the existing Keychain
-            // entry. Claude CLI uses the macOS username (e.g. "gmartin"), not
-            // the service name. Using the wrong account name creates a
-            // duplicate entry instead of updating.
-            //
-            // When the source already carries an account name, use it verbatim:
-            // re-deriving it from the service alone would resolve to whichever
-            // item `security` returns first and could overwrite the wrong one.
-            const accountName =
-                ref.account ??
-                getKeychainAccountName(ref.service) ??
-                ref.service
-            execFileSync(
-                "/usr/bin/security",
-                [
-                    "add-generic-password",
-                    "-s",
-                    ref.service,
-                    "-a",
-                    accountName,
-                    "-w",
-                    updated,
-                    "-U",
-                ],
-                { timeout: 2000, stdio: "ignore" },
-            )
-            log("writeback_success", { service: ref.service, accountName })
-            return true
-        } catch {
-            log("writeback_failed", { source })
-            return false
-        }
-    }
-
-    return false
-}
-
-export function refreshAccount(source: string): ClaudeCredentials | null {
+): ClaudeCredentials | null {
     if (source === "file") {
         return readCredentialsFile()
     }
     const raw = readKeychainService(decodeSource(source))
     if (!raw) return null
     return parseCredentials(raw)
-}
-
-/** @deprecated Use readAllClaudeAccounts() instead */
-export function readClaudeCredentials(): ClaudeCredentials | null {
-    const accounts = readAllClaudeAccounts()
-    return accounts.length > 0 ? accounts[0].credentials : null
 }

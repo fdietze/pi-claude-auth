@@ -11,7 +11,6 @@ import { join } from "node:path"
 import { afterEach, beforeEach, test } from "node:test"
 import {
     loadPersistedAccountSource,
-    parseOAuthResponse,
     saveAccountSource,
     syncAuthJson,
 } from "./credentials.ts"
@@ -29,47 +28,6 @@ afterEach(() => {
     if (prevEnv === undefined) delete process.env.PI_CODING_AGENT_DIR
     else process.env.PI_CODING_AGENT_DIR = prevEnv
     rmSync(dir, { recursive: true, force: true })
-})
-
-test("parseOAuthResponse: maps a valid token response", () => {
-    const creds = parseOAuthResponse(
-        JSON.stringify({
-            access_token: "new-access",
-            refresh_token: "new-refresh",
-            expires_in: 100,
-        }),
-        "old-refresh",
-        1_000,
-    )
-    assert.ok(creds)
-    assert.equal(creds.accessToken, "new-access")
-    assert.equal(creds.refreshToken, "new-refresh")
-    assert.equal(creds.expiresAt, 1_000 + 100 * 1000)
-})
-
-test("parseOAuthResponse: keeps current refresh token when not rotated", () => {
-    const creds = parseOAuthResponse(
-        JSON.stringify({ access_token: "a", expires_in: 10 }),
-        "keep-me",
-        0,
-    )
-    assert.ok(creds)
-    assert.equal(creds.refreshToken, "keep-me")
-})
-
-test("parseOAuthResponse: defaults expires_in to 36000s", () => {
-    const creds = parseOAuthResponse(
-        JSON.stringify({ access_token: "a" }),
-        "r",
-        0,
-    )
-    assert.ok(creds)
-    assert.equal(creds.expiresAt, 36_000 * 1000)
-})
-
-test("parseOAuthResponse: returns null without an access token", () => {
-    assert.equal(parseOAuthResponse(JSON.stringify({ error: "x" }), "r"), null)
-    assert.equal(parseOAuthResponse("not json", "r"), null)
 })
 
 test("syncAuthJson: writes a pi oauth entry under anthropic", () => {
