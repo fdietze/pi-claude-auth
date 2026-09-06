@@ -54,11 +54,7 @@ export async function seedAnthropicCredential(
         writeFileSync(path, "{}", { encoding: "utf-8", mode: 0o600 })
     }
 
-    const release = await lockfile.lock(path, {
-        realpath: false,
-        stale: 30_000,
-        retries: { retries: 5, minTimeout: 50, maxTimeout: 1_000 },
-    })
+    const release = await lockAuthJson(path)
     try {
         const auth = JSON.parse(readFileSync(path, "utf-8") || "{}") as Record<
             string,
@@ -77,6 +73,28 @@ export async function seedAnthropicCredential(
         log("seed_auth_json", { path, changed: true })
     } finally {
         await release()
+    }
+}
+
+/**
+ * Take pi's own auth.json lock, with pi's parameters. The returned release
+ * never throws: a compromised lock rejects on release, and letting that mask a
+ * completed write would turn a success into a confusing failure.
+ */
+async function lockAuthJson(path: string): Promise<() => Promise<void>> {
+    const release = await lockfile.lock(path, {
+        realpath: false,
+        stale: 30_000,
+        retries: { retries: 5, minTimeout: 50, maxTimeout: 1_000 },
+    })
+    return async () => {
+        try {
+            await release()
+        } catch (err) {
+            log("auth_json_lock_release_failed", {
+                error: err instanceof Error ? err.message : String(err),
+            })
+        }
     }
 }
 
@@ -104,11 +122,7 @@ export async function removeSeededCredential(): Promise<void> {
     const path = getAuthJsonPath()
     if (!existsSync(path)) return
 
-    const release = await lockfile.lock(path, {
-        realpath: false,
-        stale: 30_000,
-        retries: { retries: 5, minTimeout: 50, maxTimeout: 1_000 },
-    })
+    const release = await lockAuthJson(path)
     try {
         const auth = JSON.parse(readFileSync(path, "utf-8") || "{}") as Record<
             string,

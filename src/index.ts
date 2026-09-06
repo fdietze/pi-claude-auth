@@ -19,7 +19,11 @@ import {
     type ClaudeCredentials,
 } from "./credentials.ts"
 import { NO_CREDENTIALS_MESSAGE } from "./credential-store.ts"
-import { readAllClaudeAccounts, type ClaudeAccount } from "./keychain.ts"
+import {
+    claudeCredentialsAbsent,
+    readAllClaudeAccounts,
+    type ClaudeAccount,
+} from "./keychain.ts"
 import { initLogger, log } from "./logger.ts"
 import { buildUserAgent } from "./signing.ts"
 import { injectBillingHeader } from "./transforms.ts"
@@ -90,8 +94,12 @@ const extension = async (pi: ExtensionAPI): Promise<void> => {
         console.warn(`pi-claude-auth: ${NO_CREDENTIALS_MESSAGE}`)
         // Drop an entry seeded by an earlier run: without Claude Code
         // credentials nothing can refresh it, and leaving it in place would
-        // shadow whatever else the user has configured for anthropic.
-        await removeSeededCredential().catch(() => {})
+        // shadow whatever else the user has configured for anthropic. Only when
+        // the credentials are definitively gone, never when they merely could
+        // not be read.
+        if (claudeCredentialsAbsent()) {
+            await removeSeededCredential().catch(() => {})
+        }
         return
     }
 
@@ -170,6 +178,13 @@ const extension = async (pi: ExtensionAPI): Promise<void> => {
         // holding its auth.json lock. Throwing surfaces the message to the user
         // ("OAuth refresh failed for anthropic: <message>"); pi persists what
         // we return, so there is nothing to write back here.
+        //
+        // pi also passes an AbortSignal, which we deliberately ignore: it
+        // merges pi's own 15s refresh timeout with the session's abort signal,
+        // and 15s is shorter than a cold `claude` start, so honouring it would
+        // cancel nearly every delegated refresh. A genuine user abort is
+        // distinguishable (`signal.reason.name === "TimeoutError"` marks the
+        // timeout) if that stall ever needs to become interruptible.
         async refreshToken(): Promise<OAuthCreds> {
             return toOAuthCreds(await refreshActiveCredentials())
         },

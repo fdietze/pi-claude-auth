@@ -24,6 +24,13 @@ export const MIN_VALIDITY_MS = 5 * 60_000
 const LOCK_WAIT_MS = CLAUDE_TIMEOUT_MS + 10_000
 const LOCK_POLL_MS = 250
 
+/**
+ * The stored Claude Code credentials cannot be used and only a new login helps.
+ * Distinct from transient failures (lock contention, an unrunnable CLI), which
+ * say nothing about the login and must not trigger fallbacks.
+ */
+export class LoginUnusable extends Error {}
+
 export const LOGIN_EXPIRED_MESSAGE =
     "Claude Code login expired or revoked. Run `claude` and log in, then retry."
 
@@ -160,7 +167,7 @@ export class CredentialStore {
         if (marker?.source === source && marker.state === state.identity) {
             log("refresh_skipped_futile", { source, usable: state.usable })
             if (state.usable && current.credentials) return current.credentials
-            throw new Error(LOGIN_EXPIRED_MESSAGE)
+            throw new LoginUnusable(LOGIN_EXPIRED_MESSAGE)
         }
 
         return this.delegateRefresh(source)
@@ -245,7 +252,7 @@ export class CredentialStore {
             if (stateBefore.usable && before.credentials) {
                 return before.credentials
             }
-            throw new Error(LOGIN_EXPIRED_MESSAGE)
+            throw new LoginUnusable(LOGIN_EXPIRED_MESSAGE)
         }
 
         log("refresh_started", { source })
@@ -290,7 +297,7 @@ export class CredentialStore {
         // state and lets the next attempt through.
         if (state.usable && after.credentials) return after.credentials
 
-        throw new Error(
+        throw new LoginUnusable(
             after.credentials ? LOGIN_EXPIRED_MESSAGE : NO_CREDENTIALS_MESSAGE,
         )
     }

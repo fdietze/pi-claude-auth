@@ -7,7 +7,11 @@ import {
 } from "node:fs"
 import { dirname, join } from "node:path"
 import { refreshViaClaudeCli } from "./claude-cli.ts"
-import { CredentialStore, NO_CREDENTIALS_MESSAGE } from "./credential-store.ts"
+import {
+    CredentialStore,
+    LoginUnusable,
+    NO_CREDENTIALS_MESSAGE,
+} from "./credential-store.ts"
 import { acquireRefreshLock } from "./refresh-lock.ts"
 import {
     readAccountCredentials,
@@ -130,10 +134,14 @@ export function getActiveCredentials(): ClaudeCredentials | null {
  */
 export async function refreshActiveCredentials(): Promise<ClaudeCredentials> {
     const account = getActiveAccount()
-    if (!account) throw new Error(NO_CREDENTIALS_MESSAGE)
+    if (!account) throw new LoginUnusable(NO_CREDENTIALS_MESSAGE)
     try {
         return await store.ensureFresh(account.source)
     } catch (err) {
+        // Only a dead source justifies looking elsewhere. Lock contention or an
+        // unrunnable CLI affect every account equally, and switching accounts
+        // over them would silently move the user to another subscription.
+        if (!(err instanceof LoginUnusable)) throw err
         // The account list is a snapshot from startup. On macOS, logging in
         // again can make Claude Code write a *different* Keychain item, which
         // would leave this process pinned to a dead one for its whole life.
@@ -148,6 +156,7 @@ export async function refreshActiveCredentials(): Promise<ClaudeCredentials> {
         log("account_rediscovered", {
             previousSource: account.source,
             newSource: replacement.source,
+            newLabel: replacement.label,
         })
         // Deliberately not persisted: this is a fallback for an unusable
         // account, not the user's choice in `/login`.

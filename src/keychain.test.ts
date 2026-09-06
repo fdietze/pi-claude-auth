@@ -1,7 +1,11 @@
 import assert from "node:assert/strict"
-import { test } from "node:test"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { afterEach, test } from "node:test"
 import {
     buildAccountLabels,
+    claudeCredentialsAbsent,
     decodeSource,
     encodeSource,
     parseKeychainDump,
@@ -127,4 +131,32 @@ test("encodeSource: distinguishes accounts under the same service", () => {
         account: "alice",
     })
     assert.notEqual(a, b)
+})
+
+// --- Definitive absence vs unreadable ------------------------------------
+
+const prevHome = process.env.HOME
+let homeDir = ""
+
+afterEach(() => {
+    if (prevHome === undefined) delete process.env.HOME
+    else process.env.HOME = prevHome
+    if (homeDir) rmSync(homeDir, { recursive: true, force: true })
+    homeDir = ""
+})
+
+test("claudeCredentialsAbsent: an unreadable credentials file is not absence", (t) => {
+    if (process.platform === "darwin") {
+        t.skip("macOS resolves absence through the Keychain")
+        return
+    }
+    homeDir = mkdtempSync(join(tmpdir(), "pi-claude-auth-home-"))
+    process.env.HOME = homeDir
+    assert.equal(claudeCredentialsAbsent(), true)
+
+    // Present but unparseable (e.g. a torn write): destructive cleanup must
+    // not treat this as "the user is logged out".
+    mkdirSync(join(homeDir, ".claude"), { recursive: true })
+    writeFileSync(join(homeDir, ".claude", ".credentials.json"), "{ broken")
+    assert.equal(claudeCredentialsAbsent(), false)
 })

@@ -26,9 +26,11 @@ export function getClaudeCredentialsPath(): string {
 }
 
 /**
- * Lock file that serializes the delegated Claude CLI refresh across every pi
- * process on the machine, so at most one `claude` refresh runs at a time.
+ * What the delegated Claude CLI refresh is locked on, so at most one `claude`
+ * refresh runs per machine. The lock itself is the sibling directory
+ * `claude-refresh.lock` that proper-lockfile creates; this path is only its
+ * name and is never written.
  */
-export function getRefreshLockPath(): string {
-    return join(getPiAgentDir(), "claude-refresh.lock")
+export function getRefreshLockTarget(): string {
+    return join(getPiAgentDir(), "claude-refresh")
 }

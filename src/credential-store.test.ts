@@ -4,6 +4,7 @@ import {
     CLAUDE_UNAVAILABLE_MESSAGE,
     CredentialStore,
     LOGIN_EXPIRED_MESSAGE,
+    LoginUnusable,
     MIN_VALIDITY_MS,
     REFRESH_BUSY_MESSAGE,
     type CredentialStoreDeps,
@@ -169,8 +170,12 @@ test("ensureFresh: a permanently busy lock fails as transient, without spawning"
     const { world, store } = makeWorld(EXPIRED)
     world.lockHeldByOther = true
 
-    await assert.rejects(store.ensureFresh(SOURCE), {
-        message: REFRESH_BUSY_MESSAGE,
+    // Callers distinguish the two by type: only an unusable login may make them
+    // look for another account, contention says nothing about the login.
+    await assert.rejects(store.ensureFresh(SOURCE), (err: Error) => {
+        assert.equal(err.message, REFRESH_BUSY_MESSAGE)
+        assert.equal(err instanceof LoginUnusable, false)
+        return true
     })
     assert.equal(world.refreshRuns, 0)
 })
@@ -179,8 +184,10 @@ test("ensureFresh: still-expired after the refresh reports an expired login", as
     const { world, store } = makeWorld(EXPIRED)
     world.onRefresh = () => {} // `claude` ran but did not log in
 
-    await assert.rejects(store.ensureFresh(SOURCE), {
-        message: LOGIN_EXPIRED_MESSAGE,
+    await assert.rejects(store.ensureFresh(SOURCE), (err: Error) => {
+        assert.equal(err.message, LOGIN_EXPIRED_MESSAGE)
+        assert.ok(err instanceof LoginUnusable)
+        return true
     })
     assert.equal(world.refreshRuns, 1)
     assert.equal(world.lockedByUs, false, "lock must be released")
@@ -291,8 +298,10 @@ test("an unrunnable claude CLI is reported as such and not remembered", async ()
         throw new ClaudeCliUnavailable("spawn claude ENOENT")
     }
 
-    await assert.rejects(store.ensureFresh(SOURCE), {
-        message: CLAUDE_UNAVAILABLE_MESSAGE,
+    await assert.rejects(store.ensureFresh(SOURCE), (err: Error) => {
+        assert.equal(err.message, CLAUDE_UNAVAILABLE_MESSAGE)
+        assert.equal(err instanceof LoginUnusable, false)
+        return true
     })
     assert.equal(world.marker, null, "a CLI that never ran proves nothing")
     assert.equal(world.lockedByUs, false)

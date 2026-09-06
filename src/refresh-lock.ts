@@ -1,24 +1,30 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs"
+import { mkdirSync } from "node:fs"
 import { dirname } from "node:path"
 import lockfile from "proper-lockfile"
 import { log } from "./logger.ts"
-import { getRefreshLockPath } from "./paths.ts"
+import { getRefreshLockTarget } from "./paths.ts"
 
 /**
- * Held refresh lock. Release exactly once, in a `finally`.
+ * Held refresh lock. Release exactly once, in a `finally`. Releasing never
+ * throws: a lock that was taken over rejects on release, and losing a good
+ * refresh to that would be absurd.
  */
 export interface RefreshLock {
     release(): Promise<void>
 }
 
 /**
- * A crashed holder's lock is taken over after this long. Well above the Claude
- * CLI timeout in claude-cli.ts, because a live holder must never be declared
- * dead: two `claude` runs at the same time are the token-rotation race this
- * lock exists to prevent. proper-lockfile refreshes the lock's mtime every
- * stale/2 while the holder lives, so only a truly dead holder ages out.
+ * A crashed holder's lock is taken over after this long.
+ *
+ * proper-lockfile refreshes the lock's mtime every stale/2 while the holder
+ * lives, so this bounds recovery from a dead holder, not the duration of a
+ * refresh. It must stay below the waiters' budget in credential-store.ts —
+ * otherwise a crashed holder makes every waiter give up before takeover is even
+ * possible — and far enough above stale/2 that a briefly blocked event loop
+ * cannot get a live holder declared dead. Two `claude` runs at once are the
+ * token-rotation race this lock exists to prevent.
  */
-const STALE_MS = 120_000
+const STALE_MS = 60_000
 
 /**
  * Take the machine-wide Claude refresh lock, or return null when another
@@ -30,13 +36,14 @@ const STALE_MS = 120_000
  * machinery.
  */
 export async function acquireRefreshLock(): Promise<RefreshLock | null> {
-    const path = getRefreshLockPath()
-    // proper-lockfile locks `<path>.lock` and requires <path> to exist.
-    mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
-    if (!existsSync(path)) writeFileSync(path, "", { mode: 0o600 })
+    const target = getRefreshLockTarget()
+    mkdirSync(dirname(target), { recursive: true, mode: 0o700 })
 
+    let release: () => Promise<void>
     try {
-        const release = await lockfile.lock(path, {
+        release = await lockfile.lock(target, {
+            // Without realpath resolution the target file never has to exist:
+            // the lock is the sibling directory `<target>.lock`.
             realpath: false,
             retries: 0,
             stale: STALE_MS,
@@ -47,14 +54,28 @@ export async function acquireRefreshLock(): Promise<RefreshLock | null> {
                 log("refresh_lock_compromised", { error: err.message })
             },
         })
-        return { release }
     } catch (err) {
-        const code = (err as NodeJS.ErrnoException).code
-        if (code !== "ELOCKED") {
-            log("refresh_lock_error", {
-                error: err instanceof Error ? err.message : String(err),
-            })
-        }
-        return null
+        if ((err as NodeJS.ErrnoException).code === "ELOCKED") return null
+        // Anything else (permissions, read-only or full filesystem) is a real
+        // problem the user has to see: reporting it as contention would send
+        // them to wait for a refresh that can never happen.
+        throw new Error(
+            `Cannot lock the Claude refresh lock at ${target}.lock: ${
+                err instanceof Error ? err.message : String(err)
+            }`,
+            { cause: err },
+        )
+    }
+
+    return {
+        release: async () => {
+            try {
+                await release()
+            } catch (err) {
+                log("refresh_lock_release_failed", {
+                    error: err instanceof Error ? err.message : String(err),
+                })
+            }
+        },
     }
 }

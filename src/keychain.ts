@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process"
-import { readFileSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import { log } from "./logger.ts"
 import { getClaudeCredentialsPath } from "./paths.ts"
 
@@ -258,6 +258,27 @@ function readCredentialsFile(): ClaudeCredentials | null {
     } catch {
         log("credentials_file_read", { success: false })
         return null
+    }
+}
+
+/**
+ * Whether Claude Code has no credential storage at all — as opposed to storage
+ * that exists but could not be read (a torn write, a permission blip, an
+ * unknown format). Both look like "no accounts" to readAllClaudeAccounts, but
+ * only definitive absence may drive destructive cleanup.
+ */
+export function claudeCredentialsAbsent(): boolean {
+    if (existsSync(getClaudeCredentialsPath())) return false
+    if (process.platform !== "darwin") return true
+
+    // On macOS, absence means every candidate Keychain item reports "not
+    // found". A locked or denied Keychain throws, which is not absence.
+    try {
+        return listClaudeKeychainRefs().every(
+            (ref) => readKeychainService(ref) === null,
+        )
+    } catch {
+        return false
     }
 }
 
