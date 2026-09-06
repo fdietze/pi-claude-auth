@@ -3,12 +3,11 @@ import type {
     ProviderConfig,
 } from "@earendil-works/pi-coding-agent"
 import {
-    forceRefreshActiveCredentials,
-    getCachedCredentials,
-    getCredentialsForSync,
+    getActiveCredentials,
     initAccounts,
     loadPersistedAccountSource,
     refreshAccountsList,
+    refreshActiveCredentials,
     saveAccountSource,
     setActiveAccountSource,
     syncAuthJson,
@@ -20,7 +19,7 @@ import { buildUserAgent } from "./signing.ts"
 import { injectBillingHeader } from "./transforms.ts"
 
 export {
-    getCachedCredentials,
+    getActiveCredentials,
     syncAuthJson,
     refreshAccountsList,
     type ClaudeCredentials,
@@ -35,7 +34,6 @@ type LoginCallbacks = Parameters<OAuthConfig["login"]>[0]
 
 const PROVIDER_ID = "anthropic"
 const PROVIDER_LABEL = "Claude Code (subscription)"
-const SYNC_INTERVAL = 5 * 60 * 1000 // 5 minutes
 
 function toOAuthCreds(creds: ClaudeCredentials): OAuthCreds {
     return {
@@ -54,10 +52,9 @@ function toOAuthCreds(creds: ClaudeCredentials): OAuthCreds {
  *
  * - Seeds the credentials into pi's auth.json. A stored credential outranks
  *   ANTHROPIC_API_KEY in pi, so this is all it takes to authenticate.
- * - Overrides the `anthropic` provider's OAuth lifecycle: refresh goes through
- *   Anthropic's OAuth endpoint (with Claude CLI fallback) and rotated tokens
- *   are written back to the Keychain / credentials file. Multiple accounts are
- *   selectable via `/login`.
+ * - Overrides the `anthropic` provider's OAuth lifecycle: refresh is delegated
+ *   to the Claude CLI, the only writer of the credentials. Multiple accounts
+ *   are selectable via `/login`.
  * - Overrides the user-agent to the full Claude Code form and injects the
  *   Claude Code billing header, so requests bill against the Claude Pro/Max
  *   subscription plan rather than pay-as-you-go API credits or extra usage.
@@ -106,25 +103,10 @@ const extension = async (pi: ExtensionAPI): Promise<void> => {
     })
 
     // Seed auth.json so pi uses the Claude Code credentials with zero login.
-    const initialCreds = getCachedCredentials()
-    if (initialCreds) {
-        syncAuthJson(initialCreds)
-    } else {
-        console.warn(
-            "pi-claude-auth: Claude credentials are expired and could not be refreshed. Run `claude` to re-authenticate.",
-        )
-    }
-
-    // Keep auth.json synced with current credentials (no refresh triggered).
-    const syncTimer = setInterval(() => {
-        try {
-            const creds = getCredentialsForSync()
-            if (creds) syncAuthJson(creds)
-        } catch {
-            // Non-fatal
-        }
-    }, SYNC_INTERVAL)
-    syncTimer.unref()
+    // Expired credentials are seeded too: pi then calls refreshToken below,
+    // which delegates the refresh to the Claude CLI.
+    const initialCreds = getActiveCredentials()
+    if (initialCreds) syncAuthJson(initialCreds)
 
     const oauth: OAuthConfig = {
         name: PROVIDER_LABEL,
@@ -165,29 +147,23 @@ const extension = async (pi: ExtensionAPI): Promise<void> => {
             setActiveAccountSource(chosen.source)
             saveAccountSource(chosen.source)
 
-            const creds = getCachedCredentials() ?? chosen.credentials
+            const creds = getActiveCredentials() ?? chosen.credentials
             syncAuthJson(creds)
             log("login", { source: chosen.source, label: chosen.label })
             return toOAuthCreds(creds)
         },
 
-        async refreshToken(credentials: OAuthCreds): Promise<OAuthCreds> {
-            const fresh = forceRefreshActiveCredentials()
-            if (fresh) {
-                syncAuthJson(fresh)
-                return toOAuthCreds(fresh)
-            }
-            log("refresh_token_fallback", {
-                reason: "force refresh returned null",
-            })
-            // Return the supplied credentials unchanged so pi can surface a
-            // clear auth error rather than crashing.
-            return credentials
+        // pi calls this once the stored token is within five minutes of expiry,
+        // holding its auth.json lock. Throwing surfaces the message to the user
+        // ("OAuth refresh failed for anthropic: <message>"); pi persists what
+        // we return, so there is nothing to write back here.
+        async refreshToken(): Promise<OAuthCreds> {
+            return toOAuthCreds(await refreshActiveCredentials())
         },
 
         getApiKey(credentials: OAuthCreds): string {
-            const latest = getCachedCredentials()
-            return latest?.accessToken ?? credentials.access
+            // Read-only: pi has already refreshed if the token was near expiry.
+            return getActiveCredentials()?.accessToken ?? credentials.access
         },
     }
 

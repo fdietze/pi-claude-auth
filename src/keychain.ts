@@ -1,8 +1,7 @@
 import { execFileSync } from "node:child_process"
 import { readFileSync } from "node:fs"
-import { homedir } from "node:os"
-import { join } from "node:path"
 import { log } from "./logger.ts"
+import { getClaudeCredentialsPath } from "./paths.ts"
 
 export interface ClaudeCredentials {
     accessToken: string
@@ -252,8 +251,7 @@ function listClaudeKeychainRefs(): KeychainRef[] {
 
 function readCredentialsFile(): ClaudeCredentials | null {
     try {
-        const credPath = join(homedir(), ".claude", ".credentials.json")
-        const raw = readFileSync(credPath, "utf-8")
+        const raw = readFileSync(getClaudeCredentialsPath(), "utf-8")
         const creds = parseCredentials(raw)
         log("credentials_file_read", { success: creds !== null })
         return creds

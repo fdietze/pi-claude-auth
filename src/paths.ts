@@ -16,3 +16,19 @@ export function getPiAgentDir(): string {
 export function getAuthJsonPath(): string {
     return join(getPiAgentDir(), "auth.json")
 }
+
+/**
+ * Absolute path to Claude Code's credentials file. Source of truth on Linux
+ * and Windows; on macOS Claude Code uses the Keychain instead.
+ */
+export function getClaudeCredentialsPath(): string {
+    return join(homedir(), ".claude", ".credentials.json")
+}
+
+/**
+ * Lock file that serializes the delegated Claude CLI refresh across every pi
+ * process on the machine, so at most one `claude` refresh runs at a time.
+ */
+export function getRefreshLockPath(): string {
+    return join(getPiAgentDir(), "claude-refresh.lock")
+}

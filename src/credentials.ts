@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process"
 import {
     chmodSync,
     existsSync,
@@ -6,10 +5,17 @@ import {
     readFileSync,
     renameSync,
     rmSync,
+    statSync,
     writeFileSync,
 } from "node:fs"
-import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
+import { refreshViaClaudeCli } from "./claude-cli.ts"
+import {
+    CredentialStore,
+    NO_CREDENTIALS_MESSAGE,
+    REFRESH_LOCK_STALE_MS,
+} from "./credential-store.ts"
+import { tryAcquireFileLock } from "./file-lock.ts"
 import {
     readAccountCredentials,
     readAllClaudeAccounts,
@@ -17,19 +23,48 @@ import {
     type ClaudeCredentials,
 } from "./keychain.ts"
 import { log } from "./logger.ts"
-import { getAuthJsonPath, getPiAgentDir } from "./paths.ts"
+import {
+    getAuthJsonPath,
+    getClaudeCredentialsPath,
+    getPiAgentDir,
+    getRefreshLockPath,
+} from "./paths.ts"
 
 export type { ClaudeCredentials } from "./keychain.ts"
 export type { ClaudeAccount } from "./keychain.ts"
 
-const CREDENTIAL_CACHE_TTL_MS = 30_000
-
-const accountCacheMap = new Map<
-    string,
-    { creds: ClaudeCredentials; cachedAt: number }
->()
 let activeAccountSource: string | null = null
 let allAccounts: ClaudeAccount[] = []
+
+/**
+ * Change token for a credential source.
+ *
+ * The credentials file gets mtime and size, which is one stat call and makes an
+ * external rewrite (the Claude CLI refreshing) immediately visible. The macOS
+ * Keychain has no equivalent cheap check — reading it costs a `security`
+ * subprocess — so it returns null, meaning "no cheap change detection".
+ */
+function stampSource(source: string): string | null {
+    if (source !== "file") return null
+    try {
+        const stats = statSync(getClaudeCredentialsPath())
+        return `${stats.mtimeMs}:${stats.size}`
+    } catch {
+        return "absent"
+    }
+}
+
+const store = new CredentialStore({
+    readSource: readAccountCredentials,
+    stampSource,
+    acquireRefreshLock: () =>
+        tryAcquireFileLock(getRefreshLockPath(), {
+            staleMs: REFRESH_LOCK_STALE_MS,
+        }),
+    runClaudeRefresh: refreshViaClaudeCli,
+    now: Date.now,
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+})
 
 export function initAccounts(accounts: ClaudeAccount[]): void {
     allAccounts = accounts
@@ -42,7 +77,7 @@ export function getAccounts(): ClaudeAccount[] {
 export function setActiveAccountSource(source: string): void {
     const previous = activeAccountSource
     activeAccountSource = source
-    accountCacheMap.delete(source)
+    store.forget(source)
     if (previous && previous !== source) {
         log("account_switch", { newSource: source, previousSource: previous })
     }
@@ -87,6 +122,28 @@ export function saveAccountSource(source: string): void {
     } catch {
         // Non-fatal
     }
+}
+
+/**
+ * Active account's credentials as currently stored by Claude Code, re-read only
+ * when the source changed. Never spawns anything, so it is safe on the request
+ * path; returns null when no account or source is readable.
+ */
+export function getActiveCredentials(): ClaudeCredentials | null {
+    const account = getActiveAccount()
+    if (!account) return null
+    return store.read(account.source)
+}
+
+/**
+ * Active account's credentials, delegating a refresh to the Claude CLI when
+ * they are at or near expiry. Throws with an actionable message when no usable
+ * credentials can be obtained.
+ */
+export async function refreshActiveCredentials(): Promise<ClaudeCredentials> {
+    const account = getActiveAccount()
+    if (!account) throw new Error(NO_CREDENTIALS_MESSAGE)
+    return store.ensureFresh(account.source)
 }
 
 function syncToPath(authPath: string, creds: ClaudeCredentials): void {
@@ -165,157 +222,4 @@ export function syncAuthJson(creds: ClaudeCredentials): void {
         })
         throw err
     }
-}
-
-function refreshViaCli(): void {
-    const maxAttempts = 2
-    for (let i = 0; i < maxAttempts; i++) {
-        log("refresh_started", { source: "cli", attempt: i + 1 })
-        try {
-            // execFileSync (argument array, no shell) avoids shell parsing of
-            // the command string — least attack surface for the CLI fallback.
-            execFileSync("claude", ["-p", ".", "--model", "haiku"], {
-                timeout: 60_000,
-                encoding: "utf-8",
-                env: { ...process.env, TERM: "dumb" },
-                stdio: "ignore",
-                cwd: tmpdir(),
-            })
-            log("refresh_success", { source: "cli" })
-            return
-        } catch (err) {
-            log("refresh_failed", {
-                source: "cli",
-                attempt: i + 1,
-                error: err instanceof Error ? err.message : String(err),
-            })
-            // Non-fatal: retry once, then give up
-        }
-    }
-}
-
-export function refreshIfNeeded(
-    account?: ClaudeAccount,
-): ClaudeCredentials | null {
-    const target = account ?? getActiveAccount()
-    if (!target) return null
-
-    // Pick up external updates to .credentials.json (e.g. the Claude CLI
-    // refreshing in another process). Bounded by getCachedCredentials's 30s
-    // TTL. macOS keychain sources stay on the in-memory path.
-    if (target.source === "file") {
-        const onDisk = readAccountCredentials(target.source)
-        if (onDisk) target.credentials = onDisk
-    }
-
-    const creds = target.credentials
-    if (creds.expiresAt > Date.now() + 60_000) return creds
-
-    log("refresh_needed", {
-        source: target.source,
-        expiresAt: creds.expiresAt,
-        expiresIn: creds.expiresAt - Date.now(),
-    })
-
-    // Only the Claude CLI rotates the refresh token; pi delegates to it.
-    refreshViaCli()
-    const refreshed = readAccountCredentials(target.source)
-    if (refreshed && refreshed.expiresAt > Date.now() + 60_000) {
-        target.credentials = refreshed
-        return refreshed
-    }
-
-    log("refresh_exhausted", {
-        source: target.source,
-        hadCredentials: !!refreshed,
-        expiresAt: refreshed?.expiresAt,
-    })
-    return null
-}
-
-/**
- * Get fresh credentials for the active account. Used by pi's
- * `oauth.refreshToken` hook, which runs when the token stored in auth.json is
- * at/near expiry.
- *
- * Re-reads the source first (the Claude CLI may have already rotated the
- * token), then delegates a refresh to the Claude CLI.
- */
-export function forceRefreshActiveCredentials(): ClaudeCredentials | null {
-    const account = getActiveAccount()
-    if (!account) return null
-
-    accountCacheMap.delete(account.source)
-
-    // The on-disk/keychain source may already hold a fresher token.
-    const onDisk = readAccountCredentials(account.source)
-    if (onDisk) account.credentials = onDisk
-    if (account.credentials.expiresAt > Date.now() + 60_000) {
-        accountCacheMap.set(account.source, {
-            creds: account.credentials,
-            cachedAt: Date.now(),
-        })
-        return account.credentials
-    }
-
-    const fresh = refreshIfNeeded(account)
-    if (fresh) {
-        accountCacheMap.set(account.source, {
-            creds: fresh,
-            cachedAt: Date.now(),
-        })
-    }
-    return fresh
-}
-
-/**
- * Returns the active account's credentials for auth.json sync purposes.
- * Unlike getCachedCredentials(), this does NOT trigger a refresh.
- * Returns null if no account or credentials are expired.
- */
-export function getCredentialsForSync(): ClaudeCredentials | null {
-    const account = getActiveAccount()
-    if (!account) return null
-
-    const creds = account.credentials
-    if (creds.expiresAt > Date.now() + 60_000) {
-        return creds
-    }
-
-    // Near expiry -- don't refresh here, let the per-request path handle it.
-    return null
-}
-
-export function getCachedCredentials(): ClaudeCredentials | null {
-    const account = getActiveAccount()
-    if (!account) return null
-
-    const now = Date.now()
-    const cached = accountCacheMap.get(account.source)
-    if (
-        cached &&
-        now - cached.cachedAt < CREDENTIAL_CACHE_TTL_MS &&
-        cached.creds.expiresAt > now + 60_000
-    ) {
-        log("cache_hit", {
-            source: account.source,
-            ttlRemaining: CREDENTIAL_CACHE_TTL_MS - (now - cached.cachedAt),
-        })
-        return cached.creds
-    }
-
-    log("cache_miss", {
-        source: account.source,
-        reason: cached ? "stale or expiring" : "empty",
-    })
-
-    const fresh = refreshIfNeeded(account)
-    if (!fresh) {
-        log("credentials_unavailable", { source: account.source })
-        accountCacheMap.delete(account.source)
-        return null
-    }
-
-    accountCacheMap.set(account.source, { creds: fresh, cachedAt: now })
-    return fresh
 }
