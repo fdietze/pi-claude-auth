@@ -1,6 +1,6 @@
 import type { FileLock } from "./file-lock.ts"
 import type { ClaudeCredentials } from "./keychain.ts"
-import type { UnusableLogin } from "./login-marker.ts"
+import type { FutileRefresh } from "./futile-refresh.ts"
 import { log } from "./logger.ts"
 
 /**
@@ -57,10 +57,10 @@ export interface CredentialStoreDeps {
     acquireRefreshLock(): FileLock | null
     /** Delegate a refresh to the Claude CLI. */
     runClaudeRefresh(): Promise<void>
-    /** Read the shared record of a login that could not be refreshed. */
-    readUnusableLogin(): UnusableLogin | null
-    /** Record a failed login, or clear the record when passed null. */
-    writeUnusableLogin(marker: UnusableLogin | null): void
+    /** Read the shared record of a refresh that achieved nothing. */
+    readFutileRefresh(): FutileRefresh | null
+    /** Record a futile refresh, or clear the record when passed null. */
+    writeFutileRefresh(marker: FutileRefresh | null): void
     now(): number
     sleep(ms: number): Promise<void>
 }
@@ -68,6 +68,16 @@ export interface CredentialStoreDeps {
 interface Snapshot {
     stamp: string | null
     credentials: ClaudeCredentials | null
+}
+
+/**
+ * What a source looks like right now, condensed to what the refresh policy
+ * needs: an identity that changes whenever a retry could produce a different
+ * answer, and whether the credentials still work at all.
+ */
+interface SourceState {
+    identity: string
+    usable: boolean
 }
 
 /**
@@ -110,16 +120,17 @@ export class CredentialStore {
     }
 
     /**
-     * Message to show when a recorded refresh failure still applies to the
-     * source's current state, null otherwise. Costs one stat and one small file
-     * read, so it is safe to call on every session start and every request.
+     * Message to show when the credentials are unusable and a refresh for
+     * exactly this state has already been tried in vain, null otherwise. Costs
+     * one stat and one small file read, so it is safe to call on every session
+     * start and every request.
      */
     loginProblem(source: string): string | null {
-        const marker = this.deps.readUnusableLogin()
+        const marker = this.deps.readFutileRefresh()
         if (!marker || marker.source !== source) return null
-        return marker.stamp === this.currentIdentity(source)
-            ? LOGIN_EXPIRED_MESSAGE
-            : null
+        const state = this.stateOf(source)
+        if (state.usable) return null
+        return marker.state === state.identity ? LOGIN_EXPIRED_MESSAGE : null
     }
 
     /**
@@ -143,26 +154,27 @@ export class CredentialStore {
             expiresAt: current.credentials?.expiresAt,
         })
 
-        // A login that already failed for exactly this credential state stays
-        // failed until the user logs in again, so spend nothing on it.
-        const marker = this.deps.readUnusableLogin()
-        if (marker?.source === source && marker.stamp === identityOf(current)) {
-            log("refresh_skipped_unusable_login", { source })
+        // Asking again for a state we already asked about cannot give a new
+        // answer, so spend nothing on it.
+        const state = stateOf(current, this.deps.now())
+        const marker = this.deps.readFutileRefresh()
+        if (marker?.source === source && marker.state === state.identity) {
+            log("refresh_skipped_futile", { source, usable: state.usable })
+            if (state.usable && current.credentials) return current.credentials
             throw new Error(LOGIN_EXPIRED_MESSAGE)
         }
 
         return this.delegateRefresh(source)
     }
 
-    /**
-     * Identity of the source's current state, without reading its contents when
-     * a stamp is available.
-     */
-    private currentIdentity(source: string): string {
-        const stamp = this.deps.stampSource(source)
-        if (stamp !== null) return stamp
-        const cached = this.snapshots.get(source)
-        return identityOf(cached ?? this.reload(source))
+    private stateOf(source: string): SourceState {
+        // read() re-reads only when the source changed, so this stays cheap.
+        this.read(source)
+        const snapshot = this.snapshots.get(source)
+        return stateOf(
+            snapshot ?? { stamp: null, credentials: null },
+            this.deps.now(),
+        )
     }
 
     private isFresh(creds: ClaudeCredentials): boolean {
@@ -232,15 +244,26 @@ export class CredentialStore {
         const after = this.reload(source)
         if (after.credentials && this.isFresh(after.credentials)) {
             log("refresh_success", { source })
-            this.deps.writeUnusableLogin(null)
+            this.deps.writeFutileRefresh(null)
             return after.credentials
         }
 
-        log("refresh_exhausted", {
+        // The CLI left this state as it was. Remember that, so no process asks
+        // again until the state changes.
+        const state = stateOf(after, this.deps.now())
+        this.deps.writeFutileRefresh({ source, state: state.identity })
+        log("refresh_ineffective", {
             source,
             expiresAt: after.credentials?.expiresAt,
+            usable: state.usable,
         })
-        this.deps.writeUnusableLogin({ source, stamp: identityOf(after) })
+
+        // Credentials short of our safety margin but not actually expired still
+        // work: returning them beats failing the request. The Claude CLI
+        // refreshes for certain once they are past expiry, which changes the
+        // state and lets the next attempt through.
+        if (state.usable && after.credentials) return after.credentials
+
         throw new Error(
             after.credentials ? LOGIN_EXPIRED_MESSAGE : NO_CREDENTIALS_MESSAGE,
         )
@@ -248,12 +271,20 @@ export class CredentialStore {
 }
 
 /**
- * What a failed refresh is remembered by: the cheap stamp when the source has
- * one, otherwise the expiry, which changes as soon as Claude Code writes new
- * credentials.
+ * Identity plus usability of a snapshot.
+ *
+ * The identity is the cheap stamp when the source has one, otherwise the
+ * expiry, and always carries the usability: a token that was merely close to
+ * expiry when we asked is a different state once it is actually expired, and
+ * asking again is then worth it — the CLI refuses to refresh a token it still
+ * considers good, but always refreshes an expired one.
  */
-function identityOf(snapshot: Snapshot): string {
-    return (
-        snapshot.stamp ?? `expires:${snapshot.credentials?.expiresAt ?? "none"}`
-    )
+function stateOf(snapshot: Snapshot, now: number): SourceState {
+    const creds = snapshot.credentials
+    const usable = creds !== null && creds.expiresAt > now
+    const base = snapshot.stamp ?? `expires:${creds?.expiresAt ?? "none"}`
+    return {
+        identity: `${base}|${creds ? (usable ? "usable" : "expired") : "missing"}`,
+        usable,
+    }
 }

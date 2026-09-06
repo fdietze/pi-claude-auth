@@ -16,7 +16,7 @@ logs the user out. pi reads the credentials, delegates every refresh to the
 | `src/keychain.ts` | Reading and parsing Claude Code credentials (macOS Keychain, credentials file) |
 | `src/claude-cli.ts` | Running `claude` to make it refresh its own credentials |
 | `src/file-lock.ts` | Cross-process mutex (exclusive file create) used to serialize the refresh |
-| `src/login-marker.ts` | Shared record of a login that could not be refreshed, so no process retries pointlessly |
+| `src/futile-refresh.ts` | Shared record of a refresh that changed nothing, so no process asks the CLI twice about the same credential state |
 | `src/auth-json.ts` | Writing pi's `auth.json` entry (empty refresh token, pi's lock protocol) |
 | `src/paths.ts` | Every path the extension touches |
 | `src/signing.ts`, `src/transforms.ts` | Claude Code user-agent and billing header |

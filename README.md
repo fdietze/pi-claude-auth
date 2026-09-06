@@ -266,11 +266,13 @@ refresh hook, which:
 Other pi processes watch the credential source while they wait, so they pick up
 the result without starting a second `claude`.
 
-If the refresh cannot produce usable credentials, the failure is recorded in
-`~/.pi/agent/claude-login-unusable.json` together with a stamp of the credential
-state that failed. While that state is unchanged, nothing is retried — no
-subprocess, no network, no timer — and pi tells you to run `claude`. Logging in
-again changes the stamp, which is what makes the next attempt happen.
+When a refresh changes nothing, that is recorded in
+`~/.pi/agent/claude-refresh-futile.json` together with the credential state it
+was tried for. The same state is never asked about twice — no subprocess, no
+network, no timer. The state changes when Claude Code writes new credentials or
+when the token crosses its expiry, and only then is a refresh attempted again.
+While the credentials are expired and a refresh has already proved futile, pi
+tells you to run `claude`.
 
 ### Technical details
 

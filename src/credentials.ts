@@ -19,7 +19,7 @@ import {
     type ClaudeAccount,
     type ClaudeCredentials,
 } from "./keychain.ts"
-import { readUnusableLogin, writeUnusableLogin } from "./login-marker.ts"
+import { readFutileRefresh, writeFutileRefresh } from "./futile-refresh.ts"
 import { log } from "./logger.ts"
 import {
     getClaudeCredentialsPath,
@@ -59,8 +59,8 @@ const store = new CredentialStore({
             staleMs: REFRESH_LOCK_STALE_MS,
         }),
     runClaudeRefresh: refreshViaClaudeCli,
-    readUnusableLogin,
-    writeUnusableLogin,
+    readFutileRefresh,
+    writeFutileRefresh,
     now: Date.now,
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 })

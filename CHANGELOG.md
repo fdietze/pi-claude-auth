@@ -19,10 +19,12 @@ Requires pi 0.85 or newer.
 - Serialize the delegated refresh with a lock file under `~/.pi/agent`, so many
   concurrent pi processes produce at most one `claude` refresh. Waiters watch
   the credential source and use the holder's result instead of spawning.
-- A failed login is recorded in `~/.pi/agent/claude-login-unusable.json` and
-  costs nothing until Claude Code writes new credentials: no subprocess, no
-  network, no timer. pi notifies once per session and reports an actionable
-  error instead of an opaque 401.
+- A refresh that changes nothing is recorded in
+  `~/.pi/agent/claude-refresh-futile.json`, so no pi process asks the CLI twice
+  about the same credential state: no subprocess, no network, no timer. The
+  state changes when Claude Code writes new credentials or when the token
+  crosses its expiry. While the credentials are expired, pi notifies once per
+  session and reports an actionable error instead of an opaque 401.
 - Write `auth.json` with `proper-lockfile` using pi's own parameters, replacing
   a second, incompatible write protocol on the same file.
 

@@ -8,7 +8,7 @@ import {
     type CredentialStoreDeps,
 } from "./credential-store.ts"
 import type { ClaudeCredentials } from "./keychain.ts"
-import type { UnusableLogin } from "./login-marker.ts"
+import type { FutileRefresh } from "./futile-refresh.ts"
 
 const SOURCE = "file"
 const NOW = 1_700_000_000_000
@@ -34,7 +34,7 @@ function makeWorld(initial: ClaudeCredentials | null) {
         refreshRuns: 0,
         lockHeldByOther: false,
         lockedByUs: false,
-        marker: null as UnusableLogin | null,
+        marker: null as FutileRefresh | null,
         slept: 0,
         now: NOW,
         /** What the delegated `claude` run does to the source. */
@@ -66,8 +66,8 @@ function makeWorld(initial: ClaudeCredentials | null) {
             world.refreshRuns++
             world.onRefresh()
         },
-        readUnusableLogin: () => world.marker,
-        writeUnusableLogin: (marker) => {
+        readFutileRefresh: () => world.marker,
+        writeFutileRefresh: (marker) => {
             world.marker = marker
         },
         now: () => world.now,
@@ -224,10 +224,32 @@ test("a failed login is remembered and retried only after the source changes", a
     assert.equal(world.marker, null, "successful refresh clears the record")
 })
 
-test("a marker from another account does not block this one", async () => {
-    const { world, store } = makeWorld(FRESH)
-    world.marker = { source: "Claude Code-credentials", stamp: world.stamp }
+test("a marker from another account does not block this one", () => {
+    const { world, store } = makeWorld(EXPIRED)
+    world.marker = { source: "Claude Code-credentials", state: world.stamp }
     assert.equal(store.loginProblem(SOURCE), null)
+})
+
+test("credentials short of the safety margin are used, not declared dead", async () => {
+    // The CLI refuses to refresh a token it still considers good.
+    const { world, store } = makeWorld(creds(NOW + 30_000, "almost-expired"))
+    world.onRefresh = () => {}
+
+    const result = await store.ensureFresh(SOURCE)
+
+    assert.equal(result.accessToken, "almost-expired")
+    assert.equal(world.refreshRuns, 1)
+    assert.equal(store.loginProblem(SOURCE), null, "not a login problem yet")
+
+    // A second request in the same window must not run the CLI again.
+    await store.ensureFresh(SOURCE)
+    assert.equal(world.refreshRuns, 1)
+
+    // Once the token is actually expired, the CLI is worth another try.
+    world.now = NOW + 60_000
+    world.onRefresh = () => world.write(FRESH)
+    assert.equal((await store.ensureFresh(SOURCE)).accessToken, "fresh")
+    assert.equal(world.refreshRuns, 2)
 })
 
 test("a transient lock timeout is not remembered as a failed login", async () => {
