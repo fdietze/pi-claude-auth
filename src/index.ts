@@ -14,6 +14,7 @@ import {
     setActiveAccountSource,
     type ClaudeCredentials,
 } from "./credentials.ts"
+import { NO_CREDENTIALS_MESSAGE } from "./credential-store.ts"
 import { readAllClaudeAccounts, type ClaudeAccount } from "./keychain.ts"
 import { initLogger, log } from "./logger.ts"
 import { buildUserAgent } from "./signing.ts"
@@ -82,9 +83,7 @@ const extension = async (pi: ExtensionAPI): Promise<void> => {
 
     if (accounts.length === 0) {
         log("extension_init_no_accounts", { reason: "no credentials found" })
-        console.warn(
-            "pi-claude-auth: No Claude Code credentials found. Run `claude` to authenticate first.",
-        )
+        console.warn(`pi-claude-auth: ${NO_CREDENTIALS_MESSAGE}`)
         return
     }
 
@@ -123,9 +122,7 @@ const extension = async (pi: ExtensionAPI): Promise<void> => {
         async login(callbacks: LoginCallbacks): Promise<OAuthCreds> {
             const latestAccounts = refreshAccountsList()
             if (latestAccounts.length === 0) {
-                throw new Error(
-                    "No Claude Code credentials found. Run `claude` to authenticate first.",
-                )
+                throw new Error(NO_CREDENTIALS_MESSAGE)
             }
 
             const currentSource =
