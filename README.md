@@ -204,16 +204,17 @@ one account is found, the picker is skipped.
 
 ## Troubleshooting
 
-| Problem                                | Solution                                                                      |
-| -------------------------------------- | ----------------------------------------------------------------------------- |
-| "No Claude Code credentials found"     | Run `claude` to authenticate with Claude Code first                           |
-| "Keychain is locked"                   | Run `security unlock-keychain ~/Library/Keychains/login.keychain-db`          |
-| "Claude Code login expired or revoked" | Run `claude` and log in. pi picks the new credentials up by itself            |
-| "Another pi process is refreshing"     | Transient: another pi instance holds the refresh lock. Send the request again |
-| Not working on Linux/Windows           | Ensure `~/.claude/.credentials.json` exists. Run `claude` to create it        |
-| Keychain access denied                 | Grant access when macOS prompts you                                           |
-| Keychain read timed out                | Restart Keychain Access (can happen on macOS Tahoe)                           |
-| Package not updating                   | Reinstall at the ref: `pi install git:github.com/fdietze/pi-claude-auth@main` |
+| Problem                                                                      | Solution                                                                                                                                                                                                                                                      |
+| ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| "No Claude Code credentials found"                                           | Run `claude` to authenticate with Claude Code first                                                                                                                                                                                                           |
+| "Keychain is locked"                                                         | Run `security unlock-keychain ~/Library/Keychains/login.keychain-db`                                                                                                                                                                                          |
+| "Claude Code login expired or revoked"                                       | Run `claude` and log in. pi picks the new credentials up by itself                                                                                                                                                                                            |
+| "Another pi process is refreshing"                                           | Transient: another pi instance holds the refresh lock. Send the request again                                                                                                                                                                                 |
+| `OAuth refresh failed ... 400 invalid_request_error` from a session/subagent | That pi session did not load this extension, so it hit pi's built-in refresh on the empty stored token. Load the extension in **every** pi session that uses these credentials, including subagents (e.g. add it to actor-subagents' `child-extensions.json`) |
+| Not working on Linux/Windows                                                 | Ensure `~/.claude/.credentials.json` exists. Run `claude` to create it                                                                                                                                                                                        |
+| Keychain access denied                                                       | Grant access when macOS prompts you                                                                                                                                                                                                                           |
+| Keychain read timed out                                                      | Restart Keychain Access (can happen on macOS Tahoe)                                                                                                                                                                                                           |
+| Package not updating                                                         | Reinstall at the ref: `pi install git:github.com/fdietze/pi-claude-auth@main`                                                                                                                                                                                 |
 
 ### Claude Code version pinning
 

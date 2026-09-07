@@ -8,6 +8,16 @@ refresh tokens are single-use, so a second rotator gets the session revoked and
 logs the user out. pi reads the credentials, delegates every refresh to the
 `claude` CLI, and never stores the real refresh token in pi's `auth.json`.
 
+**Loading contract: every pi session that uses these credentials must load this
+extension — including subagents/child sessions.** The empty refresh token in
+`auth.json` is only safe because this extension's delegated refresh replaces
+pi's built-in one *within its own process*. A pi process that reads the seeded
+`auth.json` without the extension has no delegated refresh, so near expiry pi's
+built-in Anthropic OAuth refreshes the empty token and fails with HTTP 400
+(`invalid_request_error`). Orchestrators that spawn child pi sessions (e.g.
+actor-subagents' `child-extensions.json`) must include this extension in the
+child policy.
+
 | File | Contains |
 |------|----------|
 | `src/index.ts` | The extension: provider registration, OAuth hooks, session notification |
