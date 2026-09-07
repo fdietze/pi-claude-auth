@@ -1,4 +1,5 @@
 import { mkdirSync, rmdirSync, statSync, utimesSync } from "node:fs"
+import { resolve } from "node:path"
 
 /**
  * A held lock. `release()` never throws; a lock that was taken over is simply
@@ -35,29 +36,27 @@ export function acquireDirLock(
     target: string,
     options: DirLockOptions,
 ): DirLock | null {
-    const path = `${target}.lock`
+    // Resolved, because pi locks the resolved path: a lock on a differently
+    // spelled path would guard nothing while looking like it does.
+    const path = `${resolve(target)}.lock`
 
-    if (!create(path)) {
-        // Only a lock nobody refreshes any more may be taken over. Two waiters
-        // can do that at the same time and both end up believing they hold it;
-        // the update below detects that within one interval and compromises the
-        // loser, which is what makes the takeover safe rather than merely rare.
-        if (ageMs(path) <= options.staleMs) return null
-        try {
-            rmdirSync(path)
-        } catch {
-            // Someone else got there first; the create below decides.
-        }
-        if (!create(path)) return null
+    let owned: number
+    if (create(path)) {
+        const created = mtimeMsOrNull(path)
+        if (created === null) return null // removed under us; not ours
+        owned = created
+    } else {
+        const claimed = claimIfStale(path, options.staleMs)
+        if (claimed === null) return null
+        owned = claimed
     }
 
     const compromised = new AbortController()
-    let owned = mtimeMs(path)
 
     // Keep the lock young so a live holder is never mistaken for a dead one,
     // and notice at the same time if someone took it from us. Frequent enough
     // that a stolen lock is detected well within one Claude CLI run.
-    const updateMs = Math.min(options.staleMs / 2, 15_000)
+    const updateMs = Math.min(options.staleMs / 2, 5_000)
     const updater = setInterval(() => {
         try {
             if (mtimeMs(path) !== owned) throw new Error("lock taken over")
@@ -87,6 +86,39 @@ export function acquireDirLock(
     }
 }
 
+/**
+ * Take over a lock nobody has refreshed for `staleMs`, or return null.
+ *
+ * Claiming is a write-then-verify on the mtime rather than rmdir+mkdir: a
+ * removal followed by a creation lets a second taker delete the directory the
+ * first one just made, so both would believe they hold the lock and only the
+ * update timer would notice — too late, since a `claude` refresh finishes
+ * inside that interval. Writing a mtime nobody else can produce and reading it
+ * back narrows the ambiguity to the gap between those two syscalls, and the
+ * loser learns immediately.
+ *
+ * It also interoperates with a holder that uses rmdir+mkdir (pi's library): if
+ * it removed the directory first, the claim throws ENOENT and we yield; if we
+ * claimed first, its staleness check no longer fires and it yields.
+ *
+ * Assumes the filesystem keeps sub-millisecond mtime resolution (ext4, APFS,
+ * NTFS do; it is the resolution proper-lockfile probes for).
+ */
+function claimIfStale(path: string, staleMs: number): number | null {
+    const age = ageMs(path)
+    if (age <= staleMs) return null
+
+    // Sub-millisecond randomness makes the claim unique per attempt.
+    const claim = (Date.now() + Math.random()) / 1000
+    try {
+        utimesSync(path, claim, claim)
+    } catch {
+        return null // vanished or not ours to touch
+    }
+    const after = mtimeMsOrNull(path)
+    return after !== null && Math.abs(after - claim * 1000) < 1 ? after : null
+}
+
 function create(path: string): boolean {
     try {
         mkdirSync(path)
@@ -99,6 +131,14 @@ function create(path: string): boolean {
 
 function mtimeMs(path: string): number {
     return statSync(path).mtimeMs
+}
+
+function mtimeMsOrNull(path: string): number | null {
+    try {
+        return mtimeMs(path)
+    } catch {
+        return null
+    }
 }
 
 function ageMs(path: string): number {

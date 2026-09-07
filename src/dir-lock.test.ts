@@ -1,5 +1,13 @@
 import assert from "node:assert/strict"
-import { existsSync, mkdtempSync, rmSync, utimesSync } from "node:fs"
+import {
+    existsSync,
+    mkdirSync,
+    mkdtempSync,
+    readdirSync,
+    rmdirSync,
+    rmSync,
+    utimesSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, test } from "node:test"
@@ -72,4 +80,32 @@ test("losing the lock aborts the holder's signal", async () => {
     assert.equal(held.signal.aborted, true)
     held.release()
     assert.equal(existsSync(`${target}.lock`), true, "not ours to remove")
+})
+
+// --- Interoperability with pi's own lock on the same file -----------------
+//
+// pi guards auth.json with proper-lockfile, whose on-disk protocol is exactly
+// this one: a `<file>.lock` directory, aged by its mtime, released with rmdir.
+// These tests pin the two properties that make the interlock real; breaking
+// either would silently reduce the lock to a lock against ourselves.
+
+test("our lock directory is empty, so pi's rmdir release works on it", () => {
+    const lock = acquireDirLock(target, { staleMs: 60_000 })
+    assert.ok(lock)
+    assert.deepEqual(readdirSync(`${target}.lock`), [])
+    rmdirSync(`${target}.lock`) // what pi's release does
+    lock.release()
+})
+
+test("a foreign lock directory is respected until stale, then taken over", () => {
+    // What a proper-lockfile lock looks like from outside.
+    mkdirSync(`${target}.lock`)
+    assert.equal(acquireDirLock(target, { staleMs: 60_000 }), null)
+
+    const anHourAgo = new Date(Date.now() - 3_600_000)
+    utimesSync(`${target}.lock`, anHourAgo, anHourAgo)
+    const taken = acquireDirLock(target, { staleMs: 60_000 })
+    assert.ok(taken, "an abandoned foreign lock must be takeable")
+    taken.release()
+    assert.equal(existsSync(`${target}.lock`), false)
 })

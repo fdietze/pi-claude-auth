@@ -9,7 +9,16 @@ import { join } from "node:path"
  * under this directory so the extension stays consistent with pi's layout.
  */
 export function getPiAgentDir(): string {
-    return process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent")
+    const configured = process.env.PI_CODING_AGENT_DIR
+    if (!configured) return join(homedir(), ".pi", "agent")
+    // pi expands a leading ~ in this variable. Resolving it differently would
+    // point us at a different auth.json than pi uses — and our lock on that
+    // file would then guard nothing.
+    if (configured === "~") return homedir()
+    if (configured.startsWith("~/") || configured.startsWith("~\\")) {
+        return join(homedir(), configured.slice(2))
+    }
+    return configured
 }
 
 /** Absolute path to pi's auth.json (where credentials are persisted). */

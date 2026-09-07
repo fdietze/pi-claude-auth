@@ -1,5 +1,12 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
-import { dirname } from "node:path"
+import {
+    existsSync,
+    mkdirSync,
+    readFileSync,
+    renameSync,
+    rmSync,
+    writeFileSync,
+} from "node:fs"
+import { dirname, join } from "node:path"
 import { acquireDirLock } from "./dir-lock.ts"
 import type { ClaudeCredentials } from "./keychain.ts"
 import { log } from "./logger.ts"
@@ -57,10 +64,7 @@ export async function seedAnthropicCredential(
             return
         }
         auth.anthropic = entry
-        writeFileSync(path, JSON.stringify(auth, null, 2), {
-            encoding: "utf-8",
-            mode: 0o600,
-        })
+        writeAuthJson(path, auth)
         log("seed_auth_json", { path, changed: true })
     })
 }
@@ -127,12 +131,31 @@ export async function removeSeededCredential(): Promise<void> {
             | undefined
         if (existing?.type !== "oauth" || existing.refresh !== "") return
         delete auth.anthropic
-        writeFileSync(path, JSON.stringify(auth, null, 2), {
+        writeAuthJson(path, auth)
+        log("removed_seeded_credential", { path })
+    })
+}
+
+/**
+ * Replace auth.json atomically. The lock keeps other writers out, but a crash
+ * mid-write would still truncate the file and take every other provider's
+ * credentials with it; a rename either happens completely or not at all.
+ */
+function writeAuthJson(path: string, auth: Record<string, unknown>): void {
+    const tmpPath = join(
+        dirname(path),
+        `.auth.json.${process.pid}.${Date.now().toString(36)}.tmp`,
+    )
+    try {
+        writeFileSync(tmpPath, JSON.stringify(auth, null, 2), {
             encoding: "utf-8",
             mode: 0o600,
         })
-        log("removed_seeded_credential", { path })
-    })
+        renameSync(tmpPath, path)
+    } catch (err) {
+        rmSync(tmpPath, { force: true })
+        throw err
+    }
 }
 
 function readAuthJson(path: string): Record<string, unknown> {
