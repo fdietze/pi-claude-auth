@@ -101,22 +101,26 @@ export function acquireDirLock(
  * it removed the directory first, the claim throws ENOENT and we yield; if we
  * claimed first, its staleness check no longer fires and it yields.
  *
- * Assumes the filesystem keeps sub-millisecond mtime resolution (ext4, APFS,
- * NTFS do; it is the resolution proper-lockfile probes for).
+ * Claims are whole milliseconds drawn from a small random backdate, so two
+ * claims either coincide exactly (~1 in 4096) or differ by at least the
+ * millisecond the comparison can resolve. Sub-millisecond randomness would be
+ * useless here: two processes claiming within the same millisecond would read
+ * back each other's value as their own.
  */
 function claimIfStale(path: string, staleMs: number): number | null {
-    const age = ageMs(path)
-    if (age <= staleMs) return null
+    if (ageMs(path) <= staleMs) return null
 
-    // Sub-millisecond randomness makes the claim unique per attempt.
-    const claim = (Date.now() + Math.random()) / 1000
+    // Backdating stays far below staleMs, so the claim cannot make the lock we
+    // just took look abandoned.
+    const spreadMs = Math.min(4096, staleMs / 4)
+    const claimMs = Date.now() - Math.floor(Math.random() * spreadMs)
     try {
-        utimesSync(path, claim, claim)
+        utimesSync(path, claimMs / 1000, claimMs / 1000)
     } catch {
         return null // vanished or not ours to touch
     }
     const after = mtimeMsOrNull(path)
-    return after !== null && Math.abs(after - claim * 1000) < 1 ? after : null
+    return after !== null && Math.abs(after - claimMs) < 1 ? after : null
 }
 
 function create(path: string): boolean {

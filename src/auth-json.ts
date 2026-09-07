@@ -1,9 +1,13 @@
 import {
+    chmodSync,
     existsSync,
     mkdirSync,
+    readdirSync,
     readFileSync,
+    realpathSync,
     renameSync,
     rmSync,
+    statSync,
     writeFileSync,
 } from "node:fs"
 import { dirname, join } from "node:path"
@@ -140,10 +144,19 @@ export async function removeSeededCredential(): Promise<void> {
  * Replace auth.json atomically. The lock keeps other writers out, but a crash
  * mid-write would still truncate the file and take every other provider's
  * credentials with it; a rename either happens completely or not at all.
+ *
+ * The rename installs a new inode, so it targets the real file behind a symlink
+ * (dotfile setups link auth.json) and carries the existing file's mode over —
+ * pi keeps administrator-set modes and ACLs on this file, and replacing it must
+ * not quietly reset them.
  */
 function writeAuthJson(path: string, auth: Record<string, unknown>): void {
+    const target = existsSync(path) ? realpathSync(path) : path
+    const dir = dirname(target)
+    sweepTempFiles(dir)
+
     const tmpPath = join(
-        dirname(path),
+        dir,
         `.auth.json.${process.pid}.${Date.now().toString(36)}.tmp`,
     )
     try {
@@ -151,10 +164,29 @@ function writeAuthJson(path: string, auth: Record<string, unknown>): void {
             encoding: "utf-8",
             mode: 0o600,
         })
-        renameSync(tmpPath, path)
+        if (existsSync(target) && process.platform !== "win32") {
+            chmodSync(tmpPath, statSync(target).mode & 0o777)
+        }
+        renameSync(tmpPath, target)
     } catch (err) {
         rmSync(tmpPath, { force: true })
         throw err
+    }
+}
+
+/**
+ * Temp files only exist while this lock is held, so any that are lying around
+ * now were left by a process that died mid-write.
+ */
+function sweepTempFiles(dir: string): void {
+    try {
+        for (const name of readdirSync(dir)) {
+            if (name.startsWith(".auth.json.") && name.endsWith(".tmp")) {
+                rmSync(join(dir, name), { force: true })
+            }
+        }
+    } catch {
+        // Best effort: litter is not worth failing a credential write over.
     }
 }
 

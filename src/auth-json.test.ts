@@ -1,5 +1,15 @@
 import assert from "node:assert/strict"
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import {
+    chmodSync,
+    mkdirSync,
+    mkdtempSync,
+    readdirSync,
+    readFileSync,
+    rmSync,
+    statSync,
+    symlinkSync,
+    writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, test } from "node:test"
@@ -126,4 +136,47 @@ test("removeSeededCredential: never touches a credential we did not write", asyn
 
 test("removeSeededCredential: no-op without an auth.json", async () => {
     await removeSeededCredential()
+})
+
+test("seedAnthropicCredential: writes through a symlinked auth.json", async (t) => {
+    if (process.platform === "win32") {
+        t.skip("symlinks need privileges on Windows")
+        return
+    }
+    // Dotfile setups link auth.json into a managed directory; replacing the
+    // link instead of its target would silently detach pi from that file.
+    const real = join(dir, "real-auth.json")
+    writeFileSync(real, JSON.stringify({ openai: { type: "api_key" } }))
+    rmSync(authPath, { force: true })
+    symlinkSync(real, authPath)
+
+    await seedAnthropicCredential(CREDS)
+
+    assert.equal(
+        JSON.parse(readFileSync(real, "utf-8")).anthropic.access,
+        "acc",
+    )
+    assert.equal(statSync(authPath, { bigint: false }).isFile(), true)
+})
+
+test("seedAnthropicCredential: keeps an existing file's mode", async (t) => {
+    if (process.platform === "win32") {
+        t.skip("file modes differ on Windows")
+        return
+    }
+    writeFileSync(authPath, "{}", { mode: 0o600 })
+    chmodSync(authPath, 0o640) // e.g. set by an administrator
+    await seedAnthropicCredential(CREDS)
+    assert.equal(statSync(authPath).mode & 0o777, 0o640)
+})
+
+test("seedAnthropicCredential: sweeps temp files a crashed writer left", async () => {
+    mkdirSync(dir, { recursive: true })
+    const litter = join(dir, ".auth.json.999.abc.tmp")
+    writeFileSync(litter, "leftover")
+    await seedAnthropicCredential(CREDS)
+    assert.deepEqual(
+        readdirSync(dir).filter((f) => f.endsWith(".tmp")),
+        [],
+    )
 })

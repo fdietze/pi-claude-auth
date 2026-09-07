@@ -109,3 +109,16 @@ test("a foreign lock directory is respected until stale, then taken over", () =>
     taken.release()
     assert.equal(existsSync(`${target}.lock`), false)
 })
+
+test("two takeovers of the same stale lock produce exactly one holder", () => {
+    mkdirSync(`${target}.lock`)
+    const anHourAgo = new Date(Date.now() - 3_600_000)
+    utimesSync(`${target}.lock`, anHourAgo, anHourAgo)
+
+    const first = acquireDirLock(target, { staleMs: 60_000 })
+    const second = acquireDirLock(target, { staleMs: 60_000 })
+
+    assert.ok(first, "the first taker owns the lock")
+    assert.equal(second, null, "the second must not also own it")
+    first.release()
+})
