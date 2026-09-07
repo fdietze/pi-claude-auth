@@ -31,9 +31,6 @@
             "import": "./dist/index.js"
         }
     },
-    "publishConfig": {
-        "access": "public"
-    },
     "scripts": {
         "build": "tsc",
         "test": "node --test --experimental-strip-types src/**/*.test.ts",
@@ -41,8 +38,7 @@
         "smoke": "node --experimental-strip-types scripts/smoke-pi-runtime.ts",
         "lint": "oxlint && oxfmt --check .",
         "lint:fix": "oxlint --fix . && oxfmt --write .",
-        "format": "oxfmt --write .",
-        "prepublishOnly": "pnpm run build && pnpm test"
+        "format": "oxfmt --write ."
     },
     "devDependencies": {
         "@earendil-works/pi-coding-agent": "^0.85.1",

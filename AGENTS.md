@@ -23,11 +23,15 @@ logs the user out. pi reads the credentials, delegates every refresh to the
 | `src/signing.ts`, `src/transforms.ts` | Claude Code user-agent and billing header |
 | `src/logger.ts` | Opt-in redacted diagnostics (`PI_CLAUDE_AUTH_DEBUG`) |
 
+The `main` branch is the release channel: consumers install from `@main` (pi
+package or Nix flake input), there are no version tags. Keep `main` green.
+
 `just all` (lint, build, test) must pass before every commit. Unit tests run
 under `node`, but the extension runs inside pi's embedded **Bun**, whose
 `node:fs` is a Proxy — code that mutates the fs module object (as
 `proper-lockfile` does) passes the unit tests and crashes pi. `just smoke`
-exercises the extension in the real pi runtime and must pass before a release.
+exercises the extension in the real pi runtime and must pass before pushing to
+`main`.
 
 Unit tests must never touch the real `~/.claude` credentials or `~/.pi/agent`:
 they override `HOME` and `PI_CODING_AGENT_DIR` to a temp dir, and never run a

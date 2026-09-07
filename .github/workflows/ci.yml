@@ -5,8 +5,8 @@ on:
         branches:
             - main
     push:
-        branches-ignore:
-            - main # main is validated by the release workflow
+        branches:
+            - main # main is the release channel, so it must stay green
 
 concurrency:
     group: ci-${{ github.ref }}

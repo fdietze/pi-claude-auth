@@ -6,14 +6,15 @@ your existing Claude Code credentials — no separate login or API key needed.
 ## Quick start
 
 ```bash
-pi install git:github.com/fdietze/pi-claude-auth@v0.4.0
+pi install git:github.com/fdietze/pi-claude-auth@main
 ```
 
 Restart pi, pick a model with `/model` (or Ctrl+L). Done — your Claude Code
 credentials are already seeded.
 
-> This fork is distributed via git tags, not npm. Pin to a tag (e.g. `@v0.4.0`)
-> for a reproducible install; use `@main` to track the latest.
+> This fork is distributed as source on the `main` branch, not npm. `@main`
+> tracks the latest; for an exact, reproducible pin append a commit SHA
+> (`@<sha>`) instead.
 
 ## Prerequisites
 
@@ -36,10 +37,10 @@ credentials are already seeded.
 ### Option A: pi package manager (recommended)
 
 ```bash
-pi install git:github.com/fdietze/pi-claude-auth@v0.4.0
+pi install git:github.com/fdietze/pi-claude-auth@main
 ```
 
-pi clones the tag into `~/.pi/agent/git/` and loads the extension straight from
+pi clones `main` into `~/.pi/agent/git/` and loads the extension straight from
 `src/index.ts` (it has no runtime dependencies). Use `-l` for a project-local
 install.
 
@@ -49,13 +50,36 @@ Add to `~/.pi/agent/settings.json` (global) or `.pi/settings.json` (project):
 
 ```json
 {
-    "packages": ["git:github.com/fdietze/pi-claude-auth@v0.4.0"]
+    "packages": ["git:github.com/fdietze/pi-claude-auth@main"]
 }
 ```
 
 Then just run `pi`. The extension loads automatically.
 
-### Option C: Let an LLM do it
+### Option C: Nix flake
+
+The extension is a plain source tree with no runtime dependencies, so a Nix
+setup consumes it directly — no npm, no pi package manager. Add it as a
+`flake = false` input and link its `src/` into pi's extension directory:
+
+```nix
+# flake.nix
+inputs.pi-claude-auth = {
+  url = "github:fdietze/pi-claude-auth";
+  flake = false;
+};
+```
+
+```nix
+# home-manager
+home.file.".pi/agent/extensions/pi-claude-auth".source =
+  "${inputs.pi-claude-auth}/src";
+```
+
+`nix flake update` then upgrades the extension with every other input. pi loads
+`src/index.ts` from the linked directory on startup.
+
+### Option D: Let an LLM do it
 
 Paste this into any LLM agent (pi, Claude Code, Cursor, etc.):
 
@@ -66,10 +90,10 @@ https://raw.githubusercontent.com/fdietze/pi-claude-auth/main/installation.md
 
 ### Updating
 
-Move to a newer tag (or `main`) by reinstalling at the new ref:
+Reinstall to pull the latest `main`:
 
 ```bash
-pi install git:github.com/fdietze/pi-claude-auth@v0.4.0
+pi install git:github.com/fdietze/pi-claude-auth@main
 ```
 
 ## Verify it's working
@@ -83,7 +107,7 @@ pi config
 You should see the extension listed:
 
 ```
-git:github.com/fdietze/pi-claude-auth@v0.4.0 (user)
+git:github.com/fdietze/pi-claude-auth@main (user)
   Extensions
     [x] src/index.ts
 ```
@@ -180,16 +204,16 @@ one account is found, the picker is skipped.
 
 ## Troubleshooting
 
-| Problem                                | Solution                                                                        |
-| -------------------------------------- | ------------------------------------------------------------------------------- |
-| "No Claude Code credentials found"     | Run `claude` to authenticate with Claude Code first                             |
-| "Keychain is locked"                   | Run `security unlock-keychain ~/Library/Keychains/login.keychain-db`            |
-| "Claude Code login expired or revoked" | Run `claude` and log in. pi picks the new credentials up by itself              |
-| "Another pi process is refreshing"     | Transient: another pi instance holds the refresh lock. Send the request again   |
-| Not working on Linux/Windows           | Ensure `~/.claude/.credentials.json` exists. Run `claude` to create it          |
-| Keychain access denied                 | Grant access when macOS prompts you                                             |
-| Keychain read timed out                | Restart Keychain Access (can happen on macOS Tahoe)                             |
-| Package not updating                   | Reinstall at the ref: `pi install git:github.com/fdietze/pi-claude-auth@v0.4.0` |
+| Problem                                | Solution                                                                      |
+| -------------------------------------- | ----------------------------------------------------------------------------- |
+| "No Claude Code credentials found"     | Run `claude` to authenticate with Claude Code first                           |
+| "Keychain is locked"                   | Run `security unlock-keychain ~/Library/Keychains/login.keychain-db`          |
+| "Claude Code login expired or revoked" | Run `claude` and log in. pi picks the new credentials up by itself            |
+| "Another pi process is refreshing"     | Transient: another pi instance holds the refresh lock. Send the request again |
+| Not working on Linux/Windows           | Ensure `~/.claude/.credentials.json` exists. Run `claude` to create it        |
+| Keychain access denied                 | Grant access when macOS prompts you                                           |
+| Keychain read timed out                | Restart Keychain Access (can happen on macOS Tahoe)                           |
+| Package not updating                   | Reinstall at the ref: `pi install git:github.com/fdietze/pi-claude-auth@main` |
 
 ### Claude Code version pinning
 
@@ -200,10 +224,10 @@ If billing reverts to extra usage after a Claude Code update, override:
 export ANTHROPIC_CLI_VERSION=<new-version>
 ```
 
-or reinstall at a newer tag:
+or reinstall to pull the latest `main`:
 
 ```bash
-pi install git:github.com/fdietze/pi-claude-auth@v0.4.0
+pi install git:github.com/fdietze/pi-claude-auth@main
 ```
 
 ### Diagnostic logging
