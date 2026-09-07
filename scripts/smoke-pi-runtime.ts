@@ -20,6 +20,7 @@
 import { spawnSync } from "node:child_process"
 import {
     chmodSync,
+    existsSync,
     mkdirSync,
     mkdtempSync,
     readFileSync,
@@ -29,7 +30,26 @@ import {
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 
-const PI = "vanilla-pi"
+/**
+ * Which pi to test. `pi` on PATH is sometimes a wrapper (a sandbox, or a shim
+ * that cannot reach its own assets), so the raw binary is tried as well and
+ * PI_SMOKE_BIN overrides both. A candidate counts as usable when the extension
+ * actually initialised under it, which is what the debug log proves.
+ */
+const PI_CANDIDATES = process.env.PI_SMOKE_BIN
+    ? [process.env.PI_SMOKE_BIN]
+    : ["pi", "vanilla-pi"]
+let PI = PI_CANDIDATES[0]
+
+/**
+ * pi must be the installed binary, not the `pi` that this repo's own
+ * devDependency puts into node_modules/.bin: that one runs on node, which is
+ * the runtime whose green tests missed the bug this test exists for.
+ */
+const SMOKE_PATH = (process.env.PATH ?? "")
+    .split(":")
+    .filter((entry) => !entry.includes("node_modules/.bin"))
+    .join(":")
 const MODEL = "anthropic/claude-haiku-4-5"
 const EXTENSION = join(process.cwd(), "src", "index.ts")
 
@@ -53,8 +73,16 @@ function fail(message: string, output: string): never {
     process.exit(1)
 }
 
-function assertNoCrash(output: string, label: string): void {
-    for (const marker of ["Proxy handler", "TypeError:", "Bun v"]) {
+/**
+ * `Bun v<version>` is the banner Bun prints when it dies on an uncaught error.
+ * Only run 1 also rejects a bare TypeError, because run 2's output contains
+ * model text that could legitimately mention one.
+ */
+function assertNoCrash(output: string, label: string, strict: boolean): void {
+    const markers = strict
+        ? ["Proxy handler", "TypeError:", "Bun v1."]
+        : ["Proxy handler", "Bun v1."]
+    for (const marker of markers) {
         if (output.includes(marker)) {
             fail(`${label}: pi crashed (${marker})`, output)
         }
@@ -96,22 +124,37 @@ function expiredLoginRun(): void {
         writeFileSync(stub, "#!/bin/sh\nexit 1\n")
         chmodSync(stub, 0o755)
 
-        const before = countClaudeProcesses()
-        const { output } = run("reply PONG", {
+        const debugLog = join(home, "debug.log")
+        const env = {
             ...process.env,
             HOME: home,
             PI_CODING_AGENT_DIR: join(home, ".pi", "agent"),
-            PATH: `${bin}:${process.env.PATH ?? ""}`,
-            PI_CLAUDE_AUTH_DEBUG: join(home, "debug.log"),
-        })
+            PATH: `${bin}:${SMOKE_PATH}`,
+            PI_CLAUDE_AUTH_DEBUG: debugLog,
+        }
 
-        assertNoCrash(output, "expired login")
+        const before = countClaudeProcesses()
+        let output = ""
+        for (const candidate of PI_CANDIDATES) {
+            PI = candidate
+            output = run("reply PONG", env).output
+            if (existsSync(debugLog)) break
+        }
+        if (!existsSync(debugLog)) {
+            fail(
+                `no usable pi binary (tried ${PI_CANDIDATES.join(", ")}); ` +
+                    "set PI_SMOKE_BIN",
+                output,
+            )
+        }
+
+        assertNoCrash(output, "expired login", true)
 
         if (!output.includes("login expired or revoked")) {
             fail("expired login: no actionable message in pi's output", output)
         }
 
-        const debug = readFileSync(join(home, "debug.log"), "utf-8")
+        const debug = readFileSync(debugLog, "utf-8")
         for (const event of ["seed_auth_json", "refresh_started"]) {
             if (!debug.includes(event)) {
                 fail(
@@ -133,14 +176,22 @@ function expiredLoginRun(): void {
             )
         }
 
+        // The lock must be gone: release correctness inside pi's runtime is
+        // exactly what the node tests cannot reach.
+        if (existsSync(join(home, ".pi", "agent", "claude-refresh.lock"))) {
+            fail("expired login: the refresh lock was left behind", output)
+        }
+
+        // Advisory only: the match is machine-wide, so another pi refreshing
+        // right now would look like our leftover.
         if (countClaudeProcesses() > before) {
-            fail(
-                "expired login: a claude refresh process was left behind",
-                output,
+            console.warn(
+                "warn expired login: a claude refresh process is running; " +
+                    "check it is not ours",
             )
         }
 
-        console.log("ok  expired login: warned, no crash, no leftovers")
+        console.log(`ok  expired login (${PI}): warned, no crash, no leftovers`)
     } finally {
         rmSync(home, { recursive: true, force: true })
     }
@@ -163,8 +214,11 @@ function realCredentialsRun(): void {
         return
     }
 
-    const { output } = run("reply PONG and nothing else", process.env)
-    assertNoCrash(output, "real credentials")
+    const { output } = run("reply PONG and nothing else", {
+        ...process.env,
+        PATH: SMOKE_PATH,
+    })
+    assertNoCrash(output, "real credentials", false)
     if (!output.includes("PONG")) {
         fail("real credentials: no model reply", output)
     }

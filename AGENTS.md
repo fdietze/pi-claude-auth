@@ -29,9 +29,15 @@ under `node`, but the extension runs inside pi's embedded **Bun**, whose
 `proper-lockfile` does) passes the unit tests and crashes pi. `just smoke`
 exercises the extension in the real pi runtime and must pass before a release.
 
-Tests must never touch the real `~/.claude` credentials or `~/.pi/agent`:
+Unit tests must never touch the real `~/.claude` credentials or `~/.pi/agent`:
 they override `HOME` and `PI_CODING_AGENT_DIR` to a temp dir, and never run a
 real `claude` refresh (redeeming the refresh token would log the user out).
+
+`just smoke` is the exception, deliberately: its first run is fully isolated
+(temp HOME, made-up expired credentials, a stub `claude`), but its second run
+uses the real credentials read-only to prove the happy path, seeding the real
+`~/.pi/agent/auth.json`. It never triggers a refresh — it skips itself when the
+token is within five minutes of expiry.
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
