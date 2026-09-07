@@ -282,8 +282,8 @@ tells you to run `claude`.
   so a refresh by Claude Code or another pi process is picked up immediately.
   The Keychain has no cheap equivalent, so those sources are re-read on expiry
 - Seeds `~/.pi/agent/auth.json` with `{ type: "oauth", access, refresh: "",
-expires }` under `anthropic`, using the same `proper-lockfile` protocol pi
-  itself uses for that file
+expires }` under `anthropic`, holding the same `<file>.lock` directory pi's
+  own locking uses, and replacing the file through a rename
 - Registers an `anthropic` OAuth provider override via
   `pi.registerProvider("anthropic", { oauth })`:
     - `login` reads the Keychain/file (no browser) and exposes an account picker
