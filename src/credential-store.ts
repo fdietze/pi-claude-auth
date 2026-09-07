@@ -4,6 +4,7 @@ import {
     ClaudeRefreshAborted,
 } from "./claude-cli.ts"
 import type { ClaudeCredentials } from "./keychain.ts"
+import type { DirLock } from "./dir-lock.ts"
 import type { FutileRefresh } from "./futile-refresh.ts"
 import { log } from "./logger.ts"
 
@@ -51,11 +52,6 @@ export const NO_CREDENTIALS_MESSAGE =
  * Everything the store does to the outside world. Injected so the policy can be
  * tested without a real `claude`, real files or real waiting.
  */
-export interface RefreshLock {
-    readonly signal: AbortSignal
-    release(): Promise<void>
-}
-
 export interface CredentialStoreDeps {
     /** Read the credentials a source currently holds. */
     readSource(source: string): ClaudeCredentials | null
@@ -65,7 +61,7 @@ export interface CredentialStoreDeps {
      */
     stampSource(source: string): string | null
     /** Try to take the machine-wide refresh lock; null when held elsewhere. */
-    acquireRefreshLock(): Promise<RefreshLock | null>
+    acquireRefreshLock(): DirLock | null
     /** Delegate a refresh to the Claude CLI; `signal` stops the run. */
     runClaudeRefresh(signal: AbortSignal): Promise<void>
     /** Read the shared record of a refresh that achieved nothing. */
@@ -207,7 +203,7 @@ export class CredentialStore {
     private async delegateRefresh(source: string): Promise<ClaudeCredentials> {
         const deadline = this.deps.now() + LOCK_WAIT_MS
         for (;;) {
-            const lock = await this.deps.acquireRefreshLock()
+            const lock = this.deps.acquireRefreshLock()
             if (lock) {
                 try {
                     return await this.refreshUnderLock(source, lock.signal)
@@ -219,7 +215,7 @@ export class CredentialStore {
                     // reload below picks up.
                     log("refresh_aborted", { source })
                 } finally {
-                    await lock.release()
+                    lock.release()
                 }
             }
 

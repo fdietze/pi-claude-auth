@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname } from "node:path"
-import lockfile from "proper-lockfile"
+import { acquireDirLock } from "./dir-lock.ts"
 import type { ClaudeCredentials } from "./keychain.ts"
 import { log } from "./logger.ts"
 import { getAuthJsonPath } from "./paths.ts"
@@ -40,26 +40,17 @@ export function toPiOAuthCredential(
  * Code with no separate login. A stored credential outranks ANTHROPIC_API_KEY
  * in pi, so this entry is all it takes.
  *
- * Uses proper-lockfile with pi's own parameters: pi guards auth.json with that
- * exact protocol, and a second protocol on the same file would be a race by
- * construction.
+ * Locked with pi's own protocol and parameters: pi guards auth.json the same
+ * way, and a second protocol on the same file would be a race by construction.
  */
 export async function seedAnthropicCredential(
     creds: ClaudeCredentials,
 ): Promise<void> {
     const path = getAuthJsonPath()
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
-    // proper-lockfile requires the target to exist before it can lock it.
-    if (!existsSync(path)) {
-        writeFileSync(path, "{}", { encoding: "utf-8", mode: 0o600 })
-    }
 
-    const release = await lockAuthJson(path)
-    try {
-        const auth = JSON.parse(readFileSync(path, "utf-8") || "{}") as Record<
-            string,
-            unknown
-        >
+    await withAuthJsonLock(path, () => {
+        const auth = readAuthJson(path)
         const entry = toPiOAuthCredential(creds)
         if (isSameEntry(auth.anthropic, entry)) {
             log("seed_auth_json", { path, changed: false })
@@ -71,30 +62,37 @@ export async function seedAnthropicCredential(
             mode: 0o600,
         })
         log("seed_auth_json", { path, changed: true })
-    } finally {
-        await release()
-    }
+    })
 }
 
 /**
- * Take pi's own auth.json lock, with pi's parameters. The returned release
- * never throws: a compromised lock rejects on release, and letting that mask a
- * completed write would turn a success into a confusing failure.
+ * pi's parameters for this file: it treats an auth.json lock older than 30s as
+ * abandoned, so ours must age the same way to interlock with it.
  */
-async function lockAuthJson(path: string): Promise<() => Promise<void>> {
-    const release = await lockfile.lock(path, {
-        realpath: false,
-        stale: 30_000,
-        retries: { retries: 5, minTimeout: 50, maxTimeout: 1_000 },
-    })
-    return async () => {
-        try {
-            await release()
-        } catch (err) {
-            log("auth_json_lock_release_failed", {
-                error: err instanceof Error ? err.message : String(err),
-            })
+const AUTH_LOCK_STALE_MS = 30_000
+
+/**
+ * Writers only hold this lock for a read-modify-write of a small file, so
+ * anything longer than a few seconds means something is wrong and failing is
+ * more useful than waiting.
+ */
+const AUTH_LOCK_WAIT_MS = 5_000
+
+async function withAuthJsonLock<T>(path: string, write: () => T): Promise<T> {
+    const deadline = Date.now() + AUTH_LOCK_WAIT_MS
+    for (;;) {
+        const lock = acquireDirLock(path, { staleMs: AUTH_LOCK_STALE_MS })
+        if (lock) {
+            try {
+                return write()
+            } finally {
+                lock.release()
+            }
         }
+        if (Date.now() >= deadline) {
+            throw new Error(`auth.json stayed locked: ${path}.lock`)
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50))
     }
 }
 
@@ -122,12 +120,8 @@ export async function removeSeededCredential(): Promise<void> {
     const path = getAuthJsonPath()
     if (!existsSync(path)) return
 
-    const release = await lockAuthJson(path)
-    try {
-        const auth = JSON.parse(readFileSync(path, "utf-8") || "{}") as Record<
-            string,
-            unknown
-        >
+    await withAuthJsonLock(path, () => {
+        const auth = readAuthJson(path)
         const existing = auth.anthropic as
             | Partial<PiOAuthCredential>
             | undefined
@@ -138,7 +132,16 @@ export async function removeSeededCredential(): Promise<void> {
             mode: 0o600,
         })
         log("removed_seeded_credential", { path })
-    } finally {
-        await release()
-    }
+    })
+}
+
+function readAuthJson(path: string): Record<string, unknown> {
+    if (!existsSync(path)) return {}
+    // Under the lock no writer is mid-write, so a parse error is a genuinely
+    // broken file. Rebuilding from {} would silently drop other providers'
+    // credentials, so the caller sees the error instead.
+    return JSON.parse(readFileSync(path, "utf-8") || "{}") as Record<
+        string,
+        unknown
+    >
 }

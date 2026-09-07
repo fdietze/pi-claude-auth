@@ -40,9 +40,8 @@ pi install git:github.com/fdietze/pi-claude-auth@v0.3.0
 ```
 
 pi clones the tag into `~/.pi/agent/git/` and loads the extension straight from
-`src/index.ts`, running `npm install` for its single runtime dependency
-(`proper-lockfile`, the same auth.json locking pi uses). Use `-l` for a
-project-local install.
+`src/index.ts` (it has no runtime dependencies). Use `-l` for a project-local
+install.
 
 ### Option B: Declare in settings.json (dotfiles-friendly)
 

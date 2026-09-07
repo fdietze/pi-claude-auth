@@ -25,8 +25,12 @@ Requires pi 0.85 or newer.
   state changes when Claude Code writes new credentials or when the token
   crosses its expiry. While the credentials are expired, pi notifies once per
   session and reports an actionable error instead of an opaque 401.
-- Write `auth.json` with `proper-lockfile` using pi's own parameters, replacing
-  a second, incompatible write protocol on the same file.
+- Lock `auth.json` with the same `<file>.lock` directory protocol pi uses,
+  replacing a second, incompatible write protocol on the same file. The
+  protocol is implemented here rather than taken from `proper-lockfile`,
+  which cannot run inside pi: pi's embedded Bun proxies `node:fs`, and the
+  library's Symbol cache on that module trips the Proxy invariant and kills pi
+  on the second lock in a process.
 
 ### Changed
 

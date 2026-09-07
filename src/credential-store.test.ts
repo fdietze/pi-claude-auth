@@ -57,13 +57,13 @@ function makeWorld(initial: ClaudeCredentials | null) {
             return world.stored
         },
         stampSource: () => world.stamp,
-        acquireRefreshLock: async () => {
+        acquireRefreshLock: () => {
             if (world.lockHeldByOther) return null
             world.lockedByUs = true
             world.lockLost = new AbortController()
             return {
                 signal: world.lockLost.signal,
-                release: async () => {
+                release: () => {
                     world.lockedByUs = false
                 },
             }
