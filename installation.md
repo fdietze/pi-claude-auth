@@ -45,13 +45,13 @@ This stores credentials in the Keychain (macOS) or
 
 ## Installation
 
-This fork is distributed via git tags, not npm. Pin to a tag (e.g. `@v0.3.0`)
+This fork is distributed via git tags, not npm. Pin to a tag (e.g. `@v0.4.0`)
 for a reproducible install, or use `@main` to track the latest.
 
 ### Option A: Install as a pi package
 
 ```bash
-pi install git:github.com/fdietze/pi-claude-auth@v0.3.0
+pi install git:github.com/fdietze/pi-claude-auth@v0.4.0
 ```
 
 pi clones the tag into `~/.pi/agent/git/` and enables it. Use `-l` for a
@@ -64,7 +64,7 @@ add the package to the `packages` array:
 
 ```json
 {
-    "packages": ["git:github.com/fdietze/pi-claude-auth@v0.3.0"]
+    "packages": ["git:github.com/fdietze/pi-claude-auth@v0.4.0"]
 }
 ```
 
@@ -75,10 +75,10 @@ node -e "
 const fs = require('fs'), path = require('path');
 const p = path.join(process.env.PI_CODING_AGENT_DIR || path.join(require('os').homedir(), '.pi/agent'), 'settings.json');
 const c = fs.existsSync(p) ? JSON.parse(fs.readFileSync(p,'utf8')) : {};
-c.packages = [...new Set([...(Array.isArray(c.packages) ? c.packages : []), 'git:github.com/fdietze/pi-claude-auth@v0.3.0'])];
+c.packages = [...new Set([...(Array.isArray(c.packages) ? c.packages : []), 'git:github.com/fdietze/pi-claude-auth@v0.4.0'])];
 fs.mkdirSync(path.dirname(p), {recursive:true});
 fs.writeFileSync(p, JSON.stringify(c, null, 2));
-console.log('Added git:github.com/fdietze/pi-claude-auth@v0.3.0 to', p);
+console.log('Added git:github.com/fdietze/pi-claude-auth@v0.4.0 to', p);
 "
 ```
 
@@ -99,7 +99,7 @@ is required — the extension has already seeded your Claude Code credentials.
 Reinstall at a newer tag (or `@main`):
 
 ```bash
-pi install git:github.com/fdietze/pi-claude-auth@v0.3.0
+pi install git:github.com/fdietze/pi-claude-auth@v0.4.0
 ```
 
 ## Done

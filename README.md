@@ -6,13 +6,13 @@ your existing Claude Code credentials — no separate login or API key needed.
 ## Quick start
 
 ```bash
-pi install git:github.com/fdietze/pi-claude-auth@v0.3.0
+pi install git:github.com/fdietze/pi-claude-auth@v0.4.0
 ```
 
 Restart pi, pick a model with `/model` (or Ctrl+L). Done — your Claude Code
 credentials are already seeded.
 
-> This fork is distributed via git tags, not npm. Pin to a tag (e.g. `@v0.3.0`)
+> This fork is distributed via git tags, not npm. Pin to a tag (e.g. `@v0.4.0`)
 > for a reproducible install; use `@main` to track the latest.
 
 ## Prerequisites
@@ -36,7 +36,7 @@ credentials are already seeded.
 ### Option A: pi package manager (recommended)
 
 ```bash
-pi install git:github.com/fdietze/pi-claude-auth@v0.3.0
+pi install git:github.com/fdietze/pi-claude-auth@v0.4.0
 ```
 
 pi clones the tag into `~/.pi/agent/git/` and loads the extension straight from
@@ -49,7 +49,7 @@ Add to `~/.pi/agent/settings.json` (global) or `.pi/settings.json` (project):
 
 ```json
 {
-    "packages": ["git:github.com/fdietze/pi-claude-auth@v0.3.0"]
+    "packages": ["git:github.com/fdietze/pi-claude-auth@v0.4.0"]
 }
 ```
 
@@ -69,7 +69,7 @@ https://raw.githubusercontent.com/fdietze/pi-claude-auth/main/installation.md
 Move to a newer tag (or `main`) by reinstalling at the new ref:
 
 ```bash
-pi install git:github.com/fdietze/pi-claude-auth@v0.3.0
+pi install git:github.com/fdietze/pi-claude-auth@v0.4.0
 ```
 
 ## Verify it's working
@@ -83,7 +83,7 @@ pi config
 You should see the extension listed:
 
 ```
-git:github.com/fdietze/pi-claude-auth@v0.3.0 (user)
+git:github.com/fdietze/pi-claude-auth@v0.4.0 (user)
   Extensions
     [x] src/index.ts
 ```
@@ -189,7 +189,7 @@ one account is found, the picker is skipped.
 | Not working on Linux/Windows           | Ensure `~/.claude/.credentials.json` exists. Run `claude` to create it          |
 | Keychain access denied                 | Grant access when macOS prompts you                                             |
 | Keychain read timed out                | Restart Keychain Access (can happen on macOS Tahoe)                             |
-| Package not updating                   | Reinstall at the ref: `pi install git:github.com/fdietze/pi-claude-auth@v0.3.0` |
+| Package not updating                   | Reinstall at the ref: `pi install git:github.com/fdietze/pi-claude-auth@v0.4.0` |
 
 ### Claude Code version pinning
 
@@ -203,7 +203,7 @@ export ANTHROPIC_CLI_VERSION=<new-version>
 or reinstall at a newer tag:
 
 ```bash
-pi install git:github.com/fdietze/pi-claude-auth@v0.3.0
+pi install git:github.com/fdietze/pi-claude-auth@v0.4.0
 ```
 
 ### Diagnostic logging
