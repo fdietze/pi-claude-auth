@@ -13,6 +13,12 @@ test:
 test-models:
     pnpm run test:models
 
+# Exercise the extension in the real pi runtime (needs `vanilla-pi` on PATH).
+# Unit tests run under node; pi runs an embedded Bun that proxies node:fs, so
+# this is the only check that covers the runtime we actually ship into.
+smoke:
+    pnpm run smoke
+
 # Lint with oxlint + oxfmt
 lint:
     pnpm run lint
