@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process"
-import { existsSync, readFileSync } from "node:fs"
+import { readFileSync } from "node:fs"
 import { log } from "./logger.ts"
 import { getClaudeCredentialsPath } from "./paths.ts"
 
@@ -97,12 +97,24 @@ export function parseKeychainDump(dump: string): KeychainRef[] {
     ]
 }
 
-function parseCredentials(raw: string): ClaudeCredentials | null {
+/**
+ * Outcome of reading one credential store. "no-login" and "unreadable" are kept
+ * apart on purpose: a store that we read successfully and that holds no login
+ * proves the user is logged out, while a store we could not read proves
+ * nothing — and only proof may drive destructive cleanup (see
+ * removeSeededCredential).
+ */
+type ReadOutcome =
+    | { kind: "credentials"; credentials: ClaudeCredentials }
+    | { kind: "no-login" }
+    | { kind: "unreadable" }
+
+function parseCredentialsOutcome(raw: string): ReadOutcome {
     let parsed: unknown
     try {
         parsed = JSON.parse(raw)
     } catch {
-        return null
+        return { kind: "unreadable" }
     }
 
     const data = (parsed as { claudeAiOauth?: unknown }).claudeAiOauth ?? parsed
@@ -117,7 +129,7 @@ function parseCredentials(raw: string): ClaudeCredentials | null {
     // Entries that only contain mcpOAuth are MCP server credentials, not
     // user accounts.
     if ((parsed as { mcpOAuth?: unknown }).mcpOAuth && !creds.accessToken) {
-        return null
+        return { kind: "no-login" }
     }
 
     if (
@@ -131,7 +143,7 @@ function parseCredentials(raw: string): ClaudeCredentials | null {
             hasExpiry: typeof creds.expiresAt === "number",
             isMcpOnly: false,
         })
-        return null
+        return { kind: "no-login" }
     }
 
     log("credentials_parsed", {
@@ -142,14 +154,22 @@ function parseCredentials(raw: string): ClaudeCredentials | null {
     })
 
     return {
-        accessToken: creds.accessToken,
-        refreshToken: creds.refreshToken,
-        expiresAt: creds.expiresAt,
-        subscriptionType:
-            typeof creds.subscriptionType === "string"
-                ? creds.subscriptionType
-                : undefined,
+        kind: "credentials",
+        credentials: {
+            accessToken: creds.accessToken,
+            refreshToken: creds.refreshToken,
+            expiresAt: creds.expiresAt,
+            subscriptionType:
+                typeof creds.subscriptionType === "string"
+                    ? creds.subscriptionType
+                    : undefined,
+        },
     }
+}
+
+function parseCredentials(raw: string): ClaudeCredentials | null {
+    const outcome = parseCredentialsOutcome(raw)
+    return outcome.kind === "credentials" ? outcome.credentials : null
 }
 
 function readKeychainService(ref: KeychainRef | string): string | null {
@@ -249,37 +269,52 @@ function listClaudeKeychainRefs(): KeychainRef[] {
     }
 }
 
-function readCredentialsFile(): ClaudeCredentials | null {
+function readCredentialsFileOutcome(): ReadOutcome {
+    let raw: string
     try {
-        const raw = readFileSync(getClaudeCredentialsPath(), "utf-8")
-        const creds = parseCredentials(raw)
-        log("credentials_file_read", { success: creds !== null })
-        return creds
-    } catch {
-        log("credentials_file_read", { success: false })
-        return null
+        raw = readFileSync(getClaudeCredentialsPath(), "utf-8")
+    } catch (err) {
+        // A missing file is a definitive "no login here"; anything else
+        // (permissions, I/O) leaves us without an answer.
+        const missing = (err as NodeJS.ErrnoException).code === "ENOENT"
+        log("credentials_file_read", { success: false, missing })
+        return missing ? { kind: "no-login" } : { kind: "unreadable" }
     }
+    const outcome = parseCredentialsOutcome(raw)
+    log("credentials_file_read", { success: outcome.kind === "credentials" })
+    return outcome
+}
+
+function readCredentialsFile(): ClaudeCredentials | null {
+    const outcome = readCredentialsFileOutcome()
+    return outcome.kind === "credentials" ? outcome.credentials : null
 }
 
 /**
- * Whether Claude Code has no credential storage at all — as opposed to storage
- * that exists but could not be read (a torn write, a permission blip, an
- * unknown format). Both look like "no accounts" to readAllClaudeAccounts, but
- * only definitive absence may drive destructive cleanup.
+ * Whether Claude Code definitively holds no login: every store we consulted was
+ * read successfully and contained none. Storage we could not read (torn write,
+ * permission blip, locked Keychain) yields false — it proves nothing, and only
+ * proof may drive destructive cleanup.
  */
 export function claudeCredentialsAbsent(): boolean {
-    if (existsSync(getClaudeCredentialsPath())) return false
-    if (process.platform !== "darwin") return true
+    const outcomes: ReadOutcome[] = [readCredentialsFileOutcome()]
 
-    // On macOS, absence means every candidate Keychain item reports "not
-    // found". A locked or denied Keychain throws, which is not absence.
-    try {
-        return listClaudeKeychainRefs().every(
-            (ref) => readKeychainService(ref) === null,
-        )
-    } catch {
-        return false
+    if (process.platform === "darwin") {
+        try {
+            for (const ref of listClaudeKeychainRefs()) {
+                const raw = readKeychainService(ref)
+                outcomes.push(
+                    raw === null
+                        ? { kind: "no-login" } // item does not exist
+                        : parseCredentialsOutcome(raw),
+                )
+            }
+        } catch {
+            return false // locked or denied: no answer
+        }
     }
+
+    return outcomes.every((outcome) => outcome.kind === "no-login")
 }
 
 export function buildAccountLabels(credsList: ClaudeCredentials[]): string[] {

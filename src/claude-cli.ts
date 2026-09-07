@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process"
+import { spawn, type ChildProcess } from "node:child_process"
 import { tmpdir } from "node:os"
 
 /**
@@ -15,6 +15,9 @@ export const CLAUDE_TIMEOUT_MS = 60_000
  */
 export class ClaudeCliUnavailable extends Error {}
 
+/** The refresh was stopped before it could finish. Transient, retryable. */
+export class ClaudeRefreshAborted extends Error {}
+
 /**
  * Make the Claude CLI refresh its own OAuth credentials.
  *
@@ -24,9 +27,13 @@ export class ClaudeCliUnavailable extends Error {}
  * only" command, so we trigger the CLI's own refresh path with the cheapest
  * request available (Haiku, empty prompt) and then re-read what it wrote.
  *
- * Rejects when the CLI cannot be started, times out, or exits non-zero.
+ * `signal` aborts the run — the caller uses it to guarantee that at most one
+ * `claude` refresh exists per machine even when its lock is taken over.
+ *
+ * Rejects when the CLI cannot be started, is aborted, times out, or exits
+ * non-zero.
  */
-export function refreshViaClaudeCli(): Promise<void> {
+export function refreshViaClaudeCli(signal: AbortSignal): Promise<void> {
     return new Promise((resolve, reject) => {
         // Argument array (no shell) keeps the attack surface minimal.
         // cwd=tmpdir avoids picking up the project's CLAUDE.md/settings, and
@@ -35,18 +42,65 @@ export function refreshViaClaudeCli(): Promise<void> {
             cwd: tmpdir(),
             env: { ...process.env, TERM: "dumb" },
             stdio: "ignore",
-            timeout: CLAUDE_TIMEOUT_MS,
-            // SIGKILL cannot be ignored. A CLI that swallowed SIGTERM would
-            // never emit "close", leaving this promise — and with it the
-            // machine-wide refresh lock — pending forever.
-            killSignal: "SIGKILL",
+            // Own process group, so stopping the refresh stops all of it: the
+            // `claude` on PATH is often a wrapper script, and killing just the
+            // direct child would leave the real CLI running — precisely the
+            // second concurrent refresh the caller's lock exists to prevent.
+            detached: process.platform !== "win32",
         })
+
+        let stopped: "aborted" | "timeout" | null = null
+        const stop = (reason: "aborted" | "timeout") => {
+            stopped = reason
+            kill(child)
+        }
+        const timer = setTimeout(() => stop("timeout"), CLAUDE_TIMEOUT_MS)
+        const onAbort = () => stop("aborted")
+        signal.addEventListener("abort", onAbort, { once: true })
+
+        const settle = (err: Error | null) => {
+            clearTimeout(timer)
+            signal.removeEventListener("abort", onAbort)
+            if (err) reject(err)
+            else resolve()
+        }
+
         child.on("error", (err) =>
-            reject(new ClaudeCliUnavailable(err.message)),
+            settle(
+                stopped === "aborted"
+                    ? new ClaudeRefreshAborted("refresh aborted")
+                    : new ClaudeCliUnavailable(err.message),
+            ),
         )
-        child.on("close", (code, signal) => {
-            if (code === 0) resolve()
-            else reject(new Error(`claude exited with ${signal ?? code}`))
+        child.on("close", (code, killedBy) => {
+            if (stopped === "aborted") {
+                settle(new ClaudeRefreshAborted("refresh aborted"))
+            } else if (stopped === "timeout") {
+                settle(
+                    new Error(`claude timed out after ${CLAUDE_TIMEOUT_MS}ms`),
+                )
+            } else if (code === 0) {
+                settle(null)
+            } else {
+                settle(new Error(`claude exited with ${killedBy ?? code}`))
+            }
         })
     })
+}
+
+/**
+ * SIGKILL cannot be caught or ignored, so the process always dies and "close"
+ * always fires — a CLI that swallowed SIGTERM would leave the refresh promise,
+ * and with it the machine-wide lock, pending forever.
+ */
+function kill(child: ChildProcess): void {
+    try {
+        if (child.pid && process.platform !== "win32") {
+            process.kill(-child.pid, "SIGKILL") // whole process group
+        } else {
+            child.kill("SIGKILL") // Windows has no process groups here
+        }
+    } catch {
+        // Already gone.
+    }
 }

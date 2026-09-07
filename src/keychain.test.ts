@@ -145,6 +145,23 @@ afterEach(() => {
     homeDir = ""
 })
 
+test("claudeCredentialsAbsent: a readable file without a login is absence", (t) => {
+    if (process.platform === "darwin") {
+        t.skip("macOS resolves absence through the Keychain")
+        return
+    }
+    homeDir = mkdtempSync(join(tmpdir(), "pi-claude-auth-home-"))
+    process.env.HOME = homeDir
+    mkdirSync(join(homeDir, ".claude"), { recursive: true })
+    // Logging out of Claude Code leaves the file behind without its OAuth
+    // section. That is proof of "no login", not an unknown.
+    writeFileSync(
+        join(homeDir, ".claude", ".credentials.json"),
+        JSON.stringify({ mcpOAuth: { "some-server": { accessToken: "x" } } }),
+    )
+    assert.equal(claudeCredentialsAbsent(), true)
+})
+
 test("claudeCredentialsAbsent: an unreadable credentials file is not absence", (t) => {
     if (process.platform === "darwin") {
         t.skip("macOS resolves absence through the Keychain")

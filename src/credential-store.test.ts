@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import { test } from "node:test"
 import {
     CLAUDE_UNAVAILABLE_MESSAGE,
+    REFRESH_INTERRUPTED_MESSAGE,
     CredentialStore,
     LOGIN_EXPIRED_MESSAGE,
     LoginUnusable,
@@ -9,7 +10,7 @@ import {
     REFRESH_BUSY_MESSAGE,
     type CredentialStoreDeps,
 } from "./credential-store.ts"
-import { ClaudeCliUnavailable } from "./claude-cli.ts"
+import { ClaudeCliUnavailable, ClaudeRefreshAborted } from "./claude-cli.ts"
 import type { ClaudeCredentials } from "./keychain.ts"
 import type { FutileRefresh } from "./futile-refresh.ts"
 
@@ -37,6 +38,7 @@ function makeWorld(initial: ClaudeCredentials | null) {
         refreshRuns: 0,
         lockHeldByOther: false,
         lockedByUs: false,
+        lockLost: new AbortController(),
         marker: null as FutileRefresh | null,
         slept: 0,
         now: NOW,
@@ -59,7 +61,9 @@ function makeWorld(initial: ClaudeCredentials | null) {
         acquireRefreshLock: async () => {
             if (world.lockHeldByOther) return null
             world.lockedByUs = true
+            world.lockLost = new AbortController()
             return {
+                signal: world.lockLost.signal,
                 release: async () => {
                     world.lockedByUs = false
                 },
@@ -312,4 +316,24 @@ test("an unrunnable claude CLI is reported as such and not remembered", async ()
         world.write(FRESH)
     }
     assert.equal((await store.ensureFresh(SOURCE)).accessToken, "fresh")
+})
+
+test("losing the lock mid-refresh is transient and is not remembered", async () => {
+    const { world, deps, store } = makeWorld(EXPIRED)
+    deps.runClaudeRefresh = async (signal) => {
+        world.refreshRuns++
+        // Another process took the lock over; refresh-lock.ts aborts us and the
+        // CLI is killed, so nothing was learned about this credential state.
+        world.lockLost.abort()
+        assert.equal(signal.aborted, true)
+        throw new ClaudeRefreshAborted("refresh aborted")
+    }
+
+    await assert.rejects(store.ensureFresh(SOURCE), (err: Error) => {
+        assert.equal(err.message, REFRESH_INTERRUPTED_MESSAGE)
+        assert.equal(err instanceof LoginUnusable, false)
+        return true
+    })
+    assert.equal(world.marker, null, "an aborted run proves nothing")
+    assert.equal(world.lockedByUs, false)
 })

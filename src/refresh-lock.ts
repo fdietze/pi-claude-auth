@@ -10,6 +10,13 @@ import { getRefreshLockTarget } from "./paths.ts"
  * refresh to that would be absurd.
  */
 export interface RefreshLock {
+    /**
+     * Aborts when the lock is compromised, i.e. another process took it over
+     * while we still held it. Whatever the holder started must stop then:
+     * "at most one `claude` refresh per machine" has to be enforced, not merely
+     * made unlikely by timeout margins.
+     */
+    readonly signal: AbortSignal
     release(): Promise<void>
 }
 
@@ -18,13 +25,13 @@ export interface RefreshLock {
  *
  * proper-lockfile refreshes the lock's mtime every stale/2 while the holder
  * lives, so this bounds recovery from a dead holder, not the duration of a
- * refresh. It must stay below the waiters' budget in credential-store.ts —
- * otherwise a crashed holder makes every waiter give up before takeover is even
- * possible — and far enough above stale/2 that a briefly blocked event loop
- * cannot get a live holder declared dead. Two `claude` runs at once are the
- * token-rotation race this lock exists to prevent.
+ * refresh. Deliberately generous: a suspended laptop or a blocked event loop
+ * must not get a live holder declared dead. It exceeds the waiters' budget in
+ * credential-store.ts, so a crashed holder costs a waiting request one
+ * transient failure before the next attempt can take the lock over — which
+ * beats stalling every request for the full staleness window.
  */
-const STALE_MS = 60_000
+const STALE_MS = 120_000
 
 /**
  * Take the machine-wide Claude refresh lock, or return null when another
@@ -39,6 +46,8 @@ export async function acquireRefreshLock(): Promise<RefreshLock | null> {
     const target = getRefreshLockTarget()
     mkdirSync(dirname(target), { recursive: true, mode: 0o700 })
 
+    const compromised = new AbortController()
+
     let release: () => Promise<void>
     try {
         release = await lockfile.lock(target, {
@@ -48,10 +57,10 @@ export async function acquireRefreshLock(): Promise<RefreshLock | null> {
             retries: 0,
             stale: STALE_MS,
             onCompromised: (err) => {
-                // Our lock was taken over while we still hold it; a second
-                // `claude` may now be running. Nothing to undo, but it explains
-                // a surprising refresh in the log.
+                // Our lock was taken over while we still hold it. Whoever took
+                // it may already be running `claude`, so ours must stop.
                 log("refresh_lock_compromised", { error: err.message })
+                compromised.abort(err)
             },
         })
     } catch (err) {
@@ -68,6 +77,7 @@ export async function acquireRefreshLock(): Promise<RefreshLock | null> {
     }
 
     return {
+        signal: compromised.signal,
         release: async () => {
             try {
                 await release()

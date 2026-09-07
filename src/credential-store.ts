@@ -1,4 +1,8 @@
-import { CLAUDE_TIMEOUT_MS, ClaudeCliUnavailable } from "./claude-cli.ts"
+import {
+    CLAUDE_TIMEOUT_MS,
+    ClaudeCliUnavailable,
+    ClaudeRefreshAborted,
+} from "./claude-cli.ts"
 import type { ClaudeCredentials } from "./keychain.ts"
 import type { FutileRefresh } from "./futile-refresh.ts"
 import { log } from "./logger.ts"
@@ -40,6 +44,9 @@ export const REFRESH_BUSY_MESSAGE =
 export const CLAUDE_UNAVAILABLE_MESSAGE =
     "Could not run the `claude` CLI to refresh the Claude Code credentials. Make sure it is installed and on PATH."
 
+export const REFRESH_INTERRUPTED_MESSAGE =
+    "The Claude Code credential refresh was interrupted. Retry in a moment."
+
 export const NO_CREDENTIALS_MESSAGE =
     "No Claude Code credentials found. Run `claude` to authenticate first."
 
@@ -48,6 +55,7 @@ export const NO_CREDENTIALS_MESSAGE =
  * tested without a real `claude`, real files or real waiting.
  */
 export interface RefreshLock {
+    readonly signal: AbortSignal
     release(): Promise<void>
 }
 
@@ -61,8 +69,8 @@ export interface CredentialStoreDeps {
     stampSource(source: string): string | null
     /** Try to take the machine-wide refresh lock; null when held elsewhere. */
     acquireRefreshLock(): Promise<RefreshLock | null>
-    /** Delegate a refresh to the Claude CLI. */
-    runClaudeRefresh(): Promise<void>
+    /** Delegate a refresh to the Claude CLI; `signal` stops the run. */
+    runClaudeRefresh(signal: AbortSignal): Promise<void>
     /** Read the shared record of a refresh that achieved nothing. */
     readFutileRefresh(): FutileRefresh | null
     /** Record a futile refresh, or clear the record when passed null. */
@@ -205,7 +213,7 @@ export class CredentialStore {
             const lock = await this.deps.acquireRefreshLock()
             if (lock) {
                 try {
-                    return await this.refreshUnderLock(source)
+                    return await this.refreshUnderLock(source, lock.signal)
                 } finally {
                     await lock.release()
                 }
@@ -227,7 +235,10 @@ export class CredentialStore {
         }
     }
 
-    private async refreshUnderLock(source: string): Promise<ClaudeCredentials> {
+    private async refreshUnderLock(
+        source: string,
+        lockLost: AbortSignal,
+    ): Promise<ClaudeCredentials> {
         // Double-check under the lock: the previous holder may have just
         // refreshed, in which case a second CLI run would be pure waste.
         const before = this.reload(source)
@@ -257,8 +268,15 @@ export class CredentialStore {
 
         log("refresh_started", { source })
         try {
-            await this.deps.runClaudeRefresh()
+            await this.deps.runClaudeRefresh(lockLost)
         } catch (err) {
+            if (err instanceof ClaudeRefreshAborted) {
+                // Our lock was taken over and the CLI was stopped: the state we
+                // would record was never actually tested, and whoever holds the
+                // lock now is doing the work.
+                log("refresh_aborted", { source })
+                throw new Error(REFRESH_INTERRUPTED_MESSAGE, { cause: err })
+            }
             if (err instanceof ClaudeCliUnavailable) {
                 // The CLI never ran, so this says nothing about the login:
                 // recording it would suppress refreshes for a state that was
