@@ -2,7 +2,6 @@ import assert from "node:assert/strict"
 import { test } from "node:test"
 import {
     CLAUDE_UNAVAILABLE_MESSAGE,
-    REFRESH_INTERRUPTED_MESSAGE,
     CredentialStore,
     LOGIN_EXPIRED_MESSAGE,
     LoginUnusable,
@@ -318,22 +317,28 @@ test("an unrunnable claude CLI is reported as such and not remembered", async ()
     assert.equal((await store.ensureFresh(SOURCE)).accessToken, "fresh")
 })
 
-test("losing the lock mid-refresh is transient and is not remembered", async () => {
+test("losing the lock mid-refresh waits for the process that took it", async () => {
     const { world, deps, store } = makeWorld(EXPIRED)
     deps.runClaudeRefresh = async (signal) => {
         world.refreshRuns++
         // Another process took the lock over; refresh-lock.ts aborts us and the
         // CLI is killed, so nothing was learned about this credential state.
         world.lockLost.abort()
+        world.lockHeldByOther = true
         assert.equal(signal.aborted, true)
         throw new ClaudeRefreshAborted("refresh aborted")
     }
+    // That process finishes its refresh while we wait.
+    const sleep = deps.sleep
+    deps.sleep = async (ms) => {
+        await sleep(ms)
+        world.write(FRESH)
+    }
 
-    await assert.rejects(store.ensureFresh(SOURCE), (err: Error) => {
-        assert.equal(err.message, REFRESH_INTERRUPTED_MESSAGE)
-        assert.equal(err instanceof LoginUnusable, false)
-        return true
-    })
+    const result = await store.ensureFresh(SOURCE)
+
+    assert.equal(result.accessToken, "fresh")
+    assert.equal(world.refreshRuns, 1, "no second CLI run of our own")
     assert.equal(world.marker, null, "an aborted run proves nothing")
     assert.equal(world.lockedByUs, false)
 })

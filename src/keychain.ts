@@ -249,7 +249,12 @@ function readKeychainService(ref: KeychainRef | string): string | null {
     }
 }
 
-function listClaudeKeychainRefs(): KeychainRef[] {
+/**
+ * Every Claude Code Keychain item, or null when the Keychain could not be
+ * enumerated at all. Null is not "there are none": callers that delete things
+ * need that difference (see claudeCredentialsAbsent).
+ */
+function listClaudeKeychainRefs(): KeychainRef[] | null {
     try {
         const dump = execFileSync("/usr/bin/security", ["dump-keychain"], {
             timeout: 5000,
@@ -265,7 +270,7 @@ function listClaudeKeychainRefs(): KeychainRef[] {
             error: "Failed to list keychain services",
             message: err instanceof Error ? err.message : String(err),
         })
-        return [{ service: PRIMARY_SERVICE }]
+        return null
     }
 }
 
@@ -300,8 +305,11 @@ export function claudeCredentialsAbsent(): boolean {
     const outcomes: ReadOutcome[] = [readCredentialsFileOutcome()]
 
     if (process.platform === "darwin") {
+        const refs = listClaudeKeychainRefs()
+        // Could not enumerate: an account under another service name may exist.
+        if (!refs) return false
         try {
-            for (const ref of listClaudeKeychainRefs()) {
+            for (const ref of refs) {
                 const raw = readKeychainService(ref)
                 outcomes.push(
                     raw === null
@@ -348,7 +356,9 @@ export function readAllClaudeAccounts(): ClaudeAccount[] {
         return [{ label, source: "file", credentials: creds }]
     }
 
-    const refs = listClaudeKeychainRefs()
+    // For reading accounts a best-effort guess is fine: probing the canonical
+    // service still finds the common single-account setup.
+    const refs = listClaudeKeychainRefs() ?? [{ service: PRIMARY_SERVICE }]
     const rawAccounts: Array<{
         source: string
         credentials: ClaudeCredentials

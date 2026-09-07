@@ -44,9 +44,6 @@ export const REFRESH_BUSY_MESSAGE =
 export const CLAUDE_UNAVAILABLE_MESSAGE =
     "Could not run the `claude` CLI to refresh the Claude Code credentials. Make sure it is installed and on PATH."
 
-export const REFRESH_INTERRUPTED_MESSAGE =
-    "The Claude Code credential refresh was interrupted. Retry in a moment."
-
 export const NO_CREDENTIALS_MESSAGE =
     "No Claude Code credentials found. Run `claude` to authenticate first."
 
@@ -214,6 +211,13 @@ export class CredentialStore {
             if (lock) {
                 try {
                     return await this.refreshUnderLock(source, lock.signal)
+                } catch (err) {
+                    if (!(err instanceof ClaudeRefreshAborted)) throw err
+                    // Losing the lock means another process is refreshing right
+                    // now — the exact case this loop waits for. The killed run
+                    // may even have written credentials already, which the
+                    // reload below picks up.
+                    log("refresh_aborted", { source })
                 } finally {
                     await lock.release()
                 }
@@ -270,13 +274,9 @@ export class CredentialStore {
         try {
             await this.deps.runClaudeRefresh(lockLost)
         } catch (err) {
-            if (err instanceof ClaudeRefreshAborted) {
-                // Our lock was taken over and the CLI was stopped: the state we
-                // would record was never actually tested, and whoever holds the
-                // lock now is doing the work.
-                log("refresh_aborted", { source })
-                throw new Error(REFRESH_INTERRUPTED_MESSAGE, { cause: err })
-            }
+            // An aborted run tested nothing, so it must not be recorded and
+            // must not be reported as a failure; delegateRefresh waits instead.
+            if (err instanceof ClaudeRefreshAborted) throw err
             if (err instanceof ClaudeCliUnavailable) {
                 // The CLI never ran, so this says nothing about the login:
                 // recording it would suppress refreshes for a state that was

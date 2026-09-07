@@ -35,6 +35,13 @@ export class ClaudeRefreshAborted extends Error {}
  */
 export function refreshViaClaudeCli(signal: AbortSignal): Promise<void> {
     return new Promise((resolve, reject) => {
+        // Aborted before we start: an "abort" listener would never fire, and
+        // spawning here would leave a CLI nothing stops.
+        if (signal.aborted) {
+            reject(new ClaudeRefreshAborted("refresh aborted"))
+            return
+        }
+
         // Argument array (no shell) keeps the attack surface minimal.
         // cwd=tmpdir avoids picking up the project's CLAUDE.md/settings, and
         // TERM=dumb keeps the CLI from emitting terminal control sequences.
