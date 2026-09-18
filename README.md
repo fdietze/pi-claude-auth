@@ -285,8 +285,8 @@ refresh hook, which:
 1. takes a machine-wide lock file (`~/.pi/agent/claude-refresh.lock`),
 2. re-reads the credentials — another pi process or Claude Code itself may have
    refreshed already, in which case it is done,
-3. otherwise runs `claude -p . --model haiku` once, which makes Claude Code
-   refresh and store its own tokens, and re-reads them.
+3. otherwise runs `claude -p "only say OK" --model haiku --effort low` once,
+   which makes Claude Code refresh and store its own tokens, and re-reads them.
 
 Other pi processes watch the credential source while they wait, so they pick up
 the result without starting a second `claude`.

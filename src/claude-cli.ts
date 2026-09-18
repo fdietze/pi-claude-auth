@@ -25,7 +25,8 @@ export class ClaudeRefreshAborted extends Error {}
  * single-use, so a second rotator (pi) racing Claude Code gets the session
  * revoked server-side and logs the user out. There is no documented "refresh
  * only" command, so we trigger the CLI's own refresh path with the cheapest
- * request available (Haiku, empty prompt) and then re-read what it wrote.
+ * request available (Haiku, minimal effort, a prompt answerable in one word)
+ * and then re-read what it wrote.
  *
  * `signal` aborts the run — the caller uses it to guarantee that at most one
  * `claude` refresh exists per machine even when its lock is taken over.
@@ -45,16 +46,28 @@ export function refreshViaClaudeCli(signal: AbortSignal): Promise<void> {
         // Argument array (no shell) keeps the attack surface minimal.
         // cwd=tmpdir avoids picking up the project's CLAUDE.md/settings, and
         // TERM=dumb keeps the CLI from emitting terminal control sequences.
-        const child = spawn("claude", ["-p", ".", "--model", "haiku"], {
-            cwd: tmpdir(),
-            env: { ...process.env, TERM: "dumb" },
-            stdio: "ignore",
-            // Own process group, so stopping the refresh stops all of it: the
-            // `claude` on PATH is often a wrapper script, and killing just the
-            // direct child would leave the real CLI running — precisely the
-            // second concurrent refresh the caller's lock exists to prevent.
-            detached: process.platform !== "win32",
-        })
+        //
+        // The prompt states the whole expected answer, and `--effort low`
+        // keeps reasoning minimal: the run exists only to make the CLI perform
+        // an authenticated request. A contentless prompt would still reach the
+        // user's global CLAUDE.md and produce a chatty reply, spending output
+        // tokens on text nobody reads. The `haiku` alias outlives any concrete
+        // model id, so a retired model cannot break the refresh path.
+        const child = spawn(
+            "claude",
+            ["-p", "only say OK", "--model", "haiku", "--effort", "low"],
+            {
+                cwd: tmpdir(),
+                env: { ...process.env, TERM: "dumb" },
+                stdio: "ignore",
+                // Own process group, so stopping the refresh stops all of it:
+                // the `claude` on PATH is often a wrapper script, and killing
+                // just the direct child would leave the real CLI running —
+                // precisely the second concurrent refresh the caller's lock
+                // exists to prevent.
+                detached: process.platform !== "win32",
+            },
+        )
 
         let stopped: "aborted" | "timeout" | null = null
         const stop = (reason: "aborted" | "timeout") => {
