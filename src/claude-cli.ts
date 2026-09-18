@@ -19,6 +19,37 @@ export class ClaudeCliUnavailable extends Error {}
 export class ClaudeRefreshAborted extends Error {}
 
 /**
+ * Auth sources that outrank the Claude Code login inside the CLI. With one of
+ * these set, `claude` authenticates the refresh request with it and never
+ * touches the OAuth token — the run succeeds and refreshes nothing.
+ */
+const OVERRIDING_AUTH_VARS = [
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+] as const
+
+/**
+ * Environment for the delegated refresh.
+ *
+ * The run exists solely to make the CLI exercise its OAuth login, so any auth
+ * source that would take precedence over that login is removed. Inheriting one
+ * turns the refresh into a silent no-op: the CLI answers the prompt via the API
+ * key, the credentials stay expired, and the caller records a futile refresh
+ * and reports the login as dead.
+ *
+ * TERM=dumb keeps the CLI from emitting terminal control sequences.
+ *
+ * Pure, so the policy is testable without spawning anything.
+ */
+export function buildRefreshEnv(
+    base: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+    const env: NodeJS.ProcessEnv = { ...base, TERM: "dumb" }
+    for (const name of OVERRIDING_AUTH_VARS) delete env[name]
+    return env
+}
+
+/**
  * Make the Claude CLI refresh its own OAuth credentials.
  *
  * Claude Code is the only writer of its credentials: OAuth refresh tokens are
@@ -44,8 +75,7 @@ export function refreshViaClaudeCli(signal: AbortSignal): Promise<void> {
         }
 
         // Argument array (no shell) keeps the attack surface minimal.
-        // cwd=tmpdir avoids picking up the project's CLAUDE.md/settings, and
-        // TERM=dumb keeps the CLI from emitting terminal control sequences.
+        // cwd=tmpdir avoids picking up the project's CLAUDE.md/settings.
         //
         // The prompt states the whole expected answer, and `--effort low`
         // keeps reasoning minimal: the run exists only to make the CLI perform
@@ -58,7 +88,7 @@ export function refreshViaClaudeCli(signal: AbortSignal): Promise<void> {
             ["-p", "only say OK", "--model", "haiku", "--effort", "low"],
             {
                 cwd: tmpdir(),
-                env: { ...process.env, TERM: "dumb" },
+                env: buildRefreshEnv(),
                 stdio: "ignore",
                 // Own process group, so stopping the refresh stops all of it:
                 // the `claude` on PATH is often a wrapper script, and killing

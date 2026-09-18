@@ -287,6 +287,9 @@ refresh hook, which:
    refreshed already, in which case it is done,
 3. otherwise runs `claude -p "only say OK" --model haiku --effort low` once,
    which makes Claude Code refresh and store its own tokens, and re-reads them.
+   `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` are stripped from that run:
+   the CLI would authenticate with them instead of the Claude Code login, and
+   the refresh would silently change nothing.
 
 Other pi processes watch the credential source while they wait, so they pick up
 the result without starting a second `claude`.
