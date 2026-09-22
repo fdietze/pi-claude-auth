@@ -218,7 +218,7 @@ one account is found, the picker is skipped.
 
 ### Claude Code version pinning
 
-The Claude Code version is pinned to `2.1.252` for billing header computation.
+The Claude Code version is pinned to `2.1.280` for billing header computation.
 If billing reverts to extra usage after a Claude Code update, override:
 
 ```bash
