@@ -27,9 +27,26 @@ export function getAuthJsonPath(): string {
 }
 
 /**
+ * Resolve the directory Claude Code keeps its credentials file in.
+ *
+ * Mirrors Claude Code's own lookup: CLAUDE_SECURESTORAGE_CONFIG_DIR (moves
+ * only the credential store), then CLAUDE_CONFIG_DIR (moves all of Claude
+ * Code's state), then `~/.claude`. An empty value counts as unset. Reading
+ * anywhere else would watch a file the delegated `claude` refresh never
+ * writes.
+ */
+export function getClaudeConfigDir(): string {
+    const secureStorage = process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR
+    if (secureStorage) return secureStorage
+    const configured = process.env.CLAUDE_CONFIG_DIR
+    if (configured) return configured
+    return join(homedir(), ".claude")
+}
+
+/**
  * Absolute path to Claude Code's credentials file. Source of truth on Linux
  * and Windows; on macOS Claude Code uses the Keychain instead.
  */
 export function getClaudeCredentialsPath(): string {
-    return join(homedir(), ".claude", ".credentials.json")
+    return join(getClaudeConfigDir(), ".credentials.json")
 }

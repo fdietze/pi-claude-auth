@@ -144,3 +144,12 @@ test("readClaudeCliVersion: null when the CLI is missing or fails", async () => 
     assert.equal(await withFakeClaude(null, readClaudeCliVersion), null)
     assert.equal(await withFakeClaude("exit 1", readClaudeCliVersion), null)
 })
+
+test("buildRefreshEnv: keeps the Claude config dir, so the refresh writes the file we read", () => {
+    const env = buildRefreshEnv({
+        CLAUDE_CONFIG_DIR: "/tmp/claude-agents",
+        CLAUDE_SECURESTORAGE_CONFIG_DIR: "/tmp/claude-secure",
+    })
+    assert.equal(env.CLAUDE_CONFIG_DIR, "/tmp/claude-agents")
+    assert.equal(env.CLAUDE_SECURESTORAGE_CONFIG_DIR, "/tmp/claude-secure")
+})
