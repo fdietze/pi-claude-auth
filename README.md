@@ -202,7 +202,7 @@ one account is found, the picker is skipped.
 | "Claude Code login expired or revoked"                                       | Run `claude` and log in. pi picks the new credentials up by itself                                                                                                                                                                                            |
 | "A Claude Code credential refresh is still running"                          | The delegated `claude` refresh outlasted pi's 15s budget. Retry in a moment                                                                                                                                                                                   |
 | `OAuth refresh failed ... 400 invalid_request_error` from a session/subagent | That pi session did not load this extension, so it hit pi's built-in refresh on the empty stored token. Load the extension in **every** pi session that uses these credentials, including subagents (e.g. add it to actor-subagents' `child-extensions.json`) |
-| Not working on Linux/Windows                                                 | Ensure `~/.claude/.credentials.json` exists. Run `claude` to create it                                                                                                                                                                                        |
+| Not working on Linux/Windows                                                 | Ensure `~/.claude/.credentials.json` (or the config-dir override) exists. Run `claude` to create it                                                                                                                                                           |
 | Keychain access denied                                                       | Grant access when macOS prompts you                                                                                                                                                                                                                           |
 | Keychain read timed out                                                      | Restart Keychain Access (can happen on macOS Tahoe)                                                                                                                                                                                                           |
 | Package not updating                                                         | Reinstall at the ref: `pi install git:github.com/fdietze/pi-claude-auth@main`                                                                                                                                                                                 |
@@ -321,6 +321,10 @@ logged into. If you selected a different Keychain account via `/login` and it
 expires, pi cannot refresh it: it falls back to another Claude Code account that
 is still valid (for this session only, your `/login` choice is kept), and
 otherwise asks you to run `claude` for that account.
+
+On macOS, `CLAUDE_CONFIG_DIR` and `CLAUDE_SECURESTORAGE_CONFIG_DIR` do not
+select the Keychain item: the extension reads all `Claude Code-credentials*`
+items, while Claude Code refreshes only the one for its config dir.
 
 ### Uninstalling
 

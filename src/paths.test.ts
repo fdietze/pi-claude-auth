@@ -59,9 +59,15 @@ test("getClaudeConfigDir: CLAUDE_SECURESTORAGE_CONFIG_DIR wins over CLAUDE_CONFI
     assert.equal(getClaudeConfigDir(), "/tmp/claude-secure")
 })
 
-test("getClaudeConfigDir: an empty override counts as unset", () => {
+test("getClaudeConfigDir: an empty CLAUDE_CONFIG_DIR counts as unset", () => {
+    delete process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR
     process.env.CLAUDE_CONFIG_DIR = ""
+    assert.equal(getClaudeConfigDir(), join(homedir(), ".claude"))
+})
+
+test("getClaudeConfigDir: an empty CLAUDE_SECURESTORAGE_CONFIG_DIR means ~/.claude, not CLAUDE_CONFIG_DIR", () => {
     process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR = ""
+    process.env.CLAUDE_CONFIG_DIR = "/tmp/claude-config"
     assert.equal(getClaudeConfigDir(), join(homedir(), ".claude"))
 })
 

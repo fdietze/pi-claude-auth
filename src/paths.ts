@@ -31,13 +31,17 @@ export function getAuthJsonPath(): string {
  *
  * Mirrors Claude Code's own lookup: CLAUDE_SECURESTORAGE_CONFIG_DIR (moves
  * only the credential store), then CLAUDE_CONFIG_DIR (moves all of Claude
- * Code's state), then `~/.claude`. An empty value counts as unset. Reading
+ * Code's state), then `~/.claude`. As in Claude Code, a set but empty
+ * CLAUDE_SECURESTORAGE_CONFIG_DIR means `~/.claude` and skips
+ * CLAUDE_CONFIG_DIR; an empty CLAUDE_CONFIG_DIR counts as unset. Reading
  * anywhere else would watch a file the delegated `claude` refresh never
  * writes.
  */
 export function getClaudeConfigDir(): string {
     const secureStorage = process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR
-    if (secureStorage) return secureStorage
+    if (secureStorage !== undefined) {
+        return secureStorage || join(homedir(), ".claude")
+    }
     const configured = process.env.CLAUDE_CONFIG_DIR
     if (configured) return configured
     return join(homedir(), ".claude")
