@@ -8,8 +8,8 @@
  *
  * Two runs:
  *
- * 1. expired login, isolated HOME — the important one. It takes two locks in
- *    one process (auth.json seed, then the refresh lock), which is what
+ * 1. expired login, isolated HOME — the important one. It takes pi's and our
+ *    auth.json lock in one process (our seed, then pi's refresh), which is what
  *    triggered the crash, and it must end in the actionable "login expired"
  *    message instead. A stub `claude` on PATH keeps this offline: the real CLI
  *    is never started and no refresh token is ever redeemed.
@@ -164,7 +164,6 @@ function expiredLoginRun(): void {
             }
         }
 
-        // Both locks were taken in one pi process, which is what used to crash.
         const authJson = readFileSync(
             join(home, ".pi", "agent", "auth.json"),
             "utf-8",
@@ -174,14 +173,6 @@ function expiredLoginRun(): void {
                 "expired login: auth.json must not carry a refresh token",
                 authJson,
             )
-        }
-
-        // The lock must be gone: release correctness inside pi's runtime is
-        // exactly what the node tests cannot reach.
-        if (
-            existsSync(join(home, ".claude", "pi-claude-auth", "refresh.lock"))
-        ) {
-            fail("expired login: the refresh lock was left behind", output)
         }
 
         // Advisory only: the process match covers the whole user, so another pi refreshing

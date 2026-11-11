@@ -90,11 +90,7 @@ https://raw.githubusercontent.com/fdietze/pi-claude-auth/main/installation.md
 
 ### Updating
 
-Stop all pi sessions using this extension before updating, including subagents,
-and let any delegated `claude` refresh finish. Older versions use a different
-refresh-lock location and do not coordinate with this version.
-
-Then reinstall to pull the latest `main`:
+Reinstall to pull the latest `main`:
 
 ```bash
 pi install git:github.com/fdietze/pi-claude-auth@main
@@ -126,20 +122,19 @@ already seeded your Claude Code credentials, so there is nothing else to do — 
 `/login`, no API key. When the token expires, pi asks the `claude` CLI to
 refresh it; Claude Code stays the only writer of your credentials.
 
-Canceling a request stops waiting for credentials, not an already-started
-refresh. That refresh keeps its lock and finishes independently; a later request
-picks up the result. A cold refresh can outlast pi's 15s refresh budget; pi then
-reports "A Claude Code credential refresh is still running. Retry in a moment."
+pi asks for a refresh five minutes before expiry. The extension then starts
+the `claude` refresh in the background and keeps serving the still-valid token;
+the next request picks up the new one. Only an already expired token makes the
+request wait. A cold refresh can outlast pi's 15s refresh budget; pi then reports
+"A Claude Code credential refresh is still running. Retry in a moment." Canceling
+stops the waiting, not the refresh.
 
-If a completed CLI attempt leaves expired credentials unchanged, pi asks you to
+If a completed CLI attempt leaves the credentials unrefreshed, pi asks you to
 run `claude` and log in, then retry. This does not prove the login was revoked:
-a completed command can fail because of a network error. That unchanged state
-is remembered to suppress repeated attempts.
-
-A CLI timeout is different: after confirmed termination, fresh credentials are
-accepted if available; otherwise the error is transient and no futile-attempt
-record is written. Unconfirmed termination retains the lock while that pi
-process lives; see [refresh-lock recovery](#refresh-lock-recovery).
+a completed command can fail because of a network error. Each pi process
+remembers that unchanged state and does not retry until Claude Code writes new
+credentials or the token crosses its expiry. A timeout (60s) is transient and
+not remembered.
 
 If your Claude Code credentials aren't OAuth-based, the extension stays out of
 the way and pi falls through to its standard Anthropic auth.
@@ -157,10 +152,9 @@ There are several good community projects solving Anthropic auth for pi (see
   Switch via `/login` when you have multiple accounts (Pro, Max, etc.).
 - **Claude-owned token rotation** — pi never redeems or stores Claude's refresh
   token. It asks the `claude` CLI to refresh its own credentials instead.
-- **One delegated refresh at a time per user** — all pi profiles sharing the
-  same Claude credential store coordinate through a non-expiring lock. An
-  unchanged failed attempt is remembered across profiles. Independently launched
-  Claude processes do not participate in this extension's lock.
+- **One token rotation, however many sessions** — concurrent refreshes from
+  any number of pi processes and Claude Code sessions are serialized by Claude
+  Code's own refresh lock, which re-reads the token under the lock.
 
 If you prefer a browser-based OAuth flow or need relay/caching features,
 check out [pi-anthropic-oauth](https://github.com/leohenon/pi-anthropic-oauth)
@@ -204,40 +198,12 @@ one account is found, the picker is skipped.
 | "No Claude Code credentials found"                                           | Run `claude` to authenticate with Claude Code first                                                                                                                                                                                                           |
 | "Keychain is locked"                                                         | Run `security unlock-keychain ~/Library/Keychains/login.keychain-db`                                                                                                                                                                                          |
 | "Claude Code login expired or revoked"                                       | Run `claude` and log in. pi picks the new credentials up by itself                                                                                                                                                                                            |
-| "A Claude Code credential refresh is still running"                          | A refresh is running in this or another pi process. Retry; if it persists, see [refresh-lock recovery](#refresh-lock-recovery)                                                                                                                                |
+| "A Claude Code credential refresh is still running"                          | The delegated `claude` refresh outlasted pi's 15s budget. Retry in a moment                                                                                                                                                                                   |
 | `OAuth refresh failed ... 400 invalid_request_error` from a session/subagent | That pi session did not load this extension, so it hit pi's built-in refresh on the empty stored token. Load the extension in **every** pi session that uses these credentials, including subagents (e.g. add it to actor-subagents' `child-extensions.json`) |
 | Not working on Linux/Windows                                                 | Ensure `~/.claude/.credentials.json` exists. Run `claude` to create it                                                                                                                                                                                        |
 | Keychain access denied                                                       | Grant access when macOS prompts you                                                                                                                                                                                                                           |
 | Keychain read timed out                                                      | Restart Keychain Access (can happen on macOS Tahoe)                                                                                                                                                                                                           |
 | Package not updating                                                         | Reinstall at the ref: `pi install git:github.com/fdietze/pi-claude-auth@main`                                                                                                                                                                                 |
-
-### Refresh-lock recovery
-
-The refresh lock `~/.claude/pi-claude-auth/refresh.lock` never expires and is
-never taken over. A paused process is not necessarily dead, and a crashed owner
-cannot be proven dead from another process: PIDs mean nothing across sandboxed
-pi sessions (each has its own PID namespace). Stealing a live lock would start a
-second token rotation and get the login revoked, so a stranded lock costs one
-manual step instead.
-
-When pi keeps reporting "still running" for over two minutes (the `owner` file
-in the lock shows when it was taken) and no pi session or `claude` refresh
-is running, stop all pi sessions using the extension, confirm that no delegated
-or orphaned `claude` process is left, then remove the lock and retry:
-
-```sh
-rm -r ~/.claude/pi-claude-auth/refresh.lock
-```
-
-Never remove the lock under a running refresh.
-
-On Unix, completion confirmation covers the direct child's close event and a
-probe of its original process group. On Windows it covers only the direct child.
-Escaped or detached descendants and independently launched Claude processes are
-outside this coordination guarantee.
-
-Forced termination during token rotation can still require a new Claude Code
-login; the extension cannot make the server exchange crash-atomic.
 
 ### Claude Code version
 
@@ -305,31 +271,24 @@ token, so no pi process can ever redeem it. pi then uses those credentials with
 zero separate login.
 
 When the token is within five minutes of expiry, pi calls this extension's
-refresh hook, which:
+refresh hook while holding its `auth.json` lock. The hook:
 
-1. takes the non-expiring `~/.claude/pi-claude-auth/refresh.lock`, shared
-   across pi profiles for the same user,
-2. re-reads the credentials — another pi process or Claude Code itself may have
+1. re-reads the credentials — Claude Code or another pi process may have
    refreshed already, in which case it is done,
-3. otherwise runs `claude -p "only say OK" --model haiku --effort low` once,
-   which makes Claude Code refresh and store its own tokens, and re-reads them.
-   `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` are stripped from that run:
-   the CLI would authenticate with them instead of the Claude Code login, and
-   the refresh would silently change nothing.
+2. otherwise starts `claude -p "only say OK" --model haiku --effort low` (once
+   per pi process; concurrent requests join it), which makes Claude Code
+   refresh and store its own tokens. `ANTHROPIC_API_KEY` and
+   `ANTHROPIC_AUTH_TOKEN` are stripped from that run: the CLI would
+   authenticate with them instead of the Claude Code login, and the refresh
+   would silently change nothing,
+3. returns the current token at once if it is still valid, so pi's lock is
+   released immediately; only an expired token waits for the run and its
+   re-read.
 
-Other pi processes watch the credential source while they wait, so they pick up
-the result without starting a second `claude`. Request cancellation ends that
-wait promptly. An already-owned refresh continues without writing pi's
-`auth.json` in the background; pi persists returned credentials on an active
-request instead.
-
-When a completed CLI attempt does not obtain sufficiently fresh credentials,
-its resulting state is recorded in `~/.claude/pi-claude-auth/futile-refresh.json`.
-This suppresses repeated attempts while that record and state remain unchanged.
-A new credential write or crossing token expiry permits another attempt.
-Timeouts and unavailable CLIs do not create this record. This is retry
-suppression, not an exactly-once execution guarantee or proof of permanent
-revocation.
+Claude Code's own refresh lock guarantees a single rotation across all
+concurrent `claude` runs. After 60s the run gets SIGTERM, and SIGKILL 5s later:
+on SIGTERM, Claude Code waits for an in-flight token refresh before exiting.
+A forced kill during rotation can still require a new Claude Code login.
 
 ### Technical details
 
@@ -346,7 +305,7 @@ expires }` under `anthropic`, holding the same `<file>.lock` directory pi's
   `pi.registerProvider("anthropic", { oauth })`:
     - `login` reads the Keychain/file (no browser) and exposes an account picker
       when multiple accounts exist
-    - `refreshToken` delegates to the `claude` CLI under the refresh lock
+    - `refreshToken` delegates to the `claude` CLI
     - `getApiKey` only reads; it never triggers a refresh
 - pi's built-in Anthropic provider applies the Claude Code identity, beta flags,
   and tool-name conventions for OAuth tokens, so requests look like Claude Code

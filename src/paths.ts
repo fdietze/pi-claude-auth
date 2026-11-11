@@ -6,7 +6,7 @@ import { join } from "node:path"
  *
  * Honors PI_CODING_AGENT_DIR (the same override pi itself respects), falling
  * back to the default `~/.pi/agent`. pi credentials, account choice and logs
- * live here; Claude refresh coordination is independent of this profile.
+ * live here.
  */
 export function getPiAgentDir(): string {
     const configured = process.env.PI_CODING_AGENT_DIR
@@ -32,14 +32,4 @@ export function getAuthJsonPath(): string {
  */
 export function getClaudeCredentialsPath(): string {
     return join(homedir(), ".claude", ".credentials.json")
-}
-
-/** Target name for the per-user non-expiring refresh barrier (`<target>.lock`). */
-export function getRefreshLockTarget(): string {
-    return join(getClaudeCoordinationDir(), "refresh")
-}
-
-/** Per-user coordination, independent of pi profiles. */
-export function getClaudeCoordinationDir(): string {
-    return join(homedir(), ".claude", "pi-claude-auth")
 }

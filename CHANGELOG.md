@@ -8,18 +8,18 @@
   credentials were cached until their own expiry, so long-lived instances
   (subagents, idle sessions) kept sending the revoked token ("OAuth access token
   has been revoked"). The Keychain database's mtime now serves as change check.
-- Honor pi's cancellation signal while waiting for credentials. An owned refresh
-  continues independently through CLI completion and credential re-read; it
-  never writes pi's `auth.json` in the background.
-- Share refresh coordination across pi profiles in `~/.claude/pi-claude-auth/`.
-  The refresh lock is never taken over: PID liveness proofs are unsound across
-  PID namespaces (sandboxed pi sessions), and a wrongly taken-over lock means a
-  second token rotation and a revoked login. A lock stranded by a crashed owner
-  is removed by hand, see `README.md#refresh-lock-recovery`. The lock is
-  published atomically, so it is never empty; on POSIX an empty lock dir left by
-  an older version is replaced.
-- Report a refresh outlasting pi's 15s refresh timeout as still running instead
-  of "The operation timed out".
+- Fix "Credential store modify failed for anthropic: Lock file is already being
+  held". pi calls the refresh hook while holding its `auth.json` lock; a
+  stranded extension refresh lock made every hook wait out pi's 15s timeout
+  there, and other pi processes gave up on pi's lock after 30s. The extension
+  no longer keeps its own refresh lock or shared futile-attempt record: Claude
+  Code's own refresh lock already guarantees one rotation across concurrent
+  `claude` runs. The hook now starts the delegated refresh and returns the
+  still-valid token at once; only an expired token waits, until pi's signal.
+  Unrefreshed states are remembered per process. A refresh outlasting pi's
+  timeout is reported as still running instead of "The operation timed out".
+- On timeout, the delegated `claude` gets SIGTERM and 5s to finish an in-flight
+  token write before SIGKILL.
 - Reject existing empty, malformed, and non-object `auth.json` contents without
   overwriting them. Only a missing file initializes an empty object.
 
@@ -28,8 +28,6 @@
 - Send the installed Claude Code version (`claude --version`, read once at
   startup) in the billing header and user-agent instead of a hardcoded one; the
   pinned `2.1.299` is only the fallback.
-- Stop old extension processes and let delegated CLIs finish before upgrading:
-  the old and new refresh-lock locations do not coordinate.
 - Remove the stale supported-model table and live model-probing script. pi owns
   the model catalog; account availability remains Anthropic's decision.
 - Remove unused upstream GitNexus instructions and skills.

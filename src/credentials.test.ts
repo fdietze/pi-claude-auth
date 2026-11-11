@@ -20,6 +20,7 @@ import {
     saveAccountSource,
     setActiveAccountSource,
 } from "./credentials.ts"
+import { REFRESH_BUSY_MESSAGE } from "./credential-store.ts"
 import { readAllClaudeAccounts } from "./keychain.ts"
 
 let dir = ""
@@ -104,7 +105,7 @@ test("pickUsableAccount: prefers a usable account over the one that failed", () 
     assert.equal(pickUsableAccount(accounts, "svc\u0001new", 5_000), null)
 })
 
-test("canceled owner has no background auth write or account fallback", async (t) => {
+test("canceled caller gets a busy error; the run ends without auth write or account fallback", async (t) => {
     if (process.platform === "darwin" || process.platform === "win32") {
         t.skip("isolated file-source executable stub is Unix non-macOS")
         return
@@ -116,7 +117,10 @@ test("canceled owner has no background auth write or account fallback", async (t
     writeFileSync(
         join(bin, "claude"),
         `#!${process.execPath}
-        setTimeout(() => process.exit(0), 150);
+        setTimeout(() => {
+            require("node:fs").writeFileSync(${JSON.stringify(join(dir, "claude-done"))}, "");
+            process.exit(0);
+        }, 150);
     `,
         { mode: 0o700 },
     )
@@ -141,16 +145,18 @@ test("canceled owner has no background auth write or account fallback", async (t
         const bytes = readFileSync(auth)
         const caller = new AbortController()
         const result = refreshActiveCredentials(caller.signal)
-        caller.abort(new Error("canceled owner"))
-        await assert.rejects(result, /canceled owner/)
-        const lock = join(dir, ".claude", "pi-claude-auth", "refresh.lock")
-        assert.equal(existsSync(lock), true)
-        // Wait for the stub owner's completion, not real credential activity.
+        caller.abort(new Error("canceled caller"))
+        await assert.rejects(result, {
+            message: REFRESH_BUSY_MESSAGE,
+        })
+        // Wait for the stub's completion, not real credential activity.
+        const done = join(dir, "claude-done")
         const deadline = Date.now() + 5_000
-        while (existsSync(lock) && Date.now() < deadline) {
+        while (!existsSync(done) && Date.now() < deadline) {
             await new Promise((resolve) => setTimeout(resolve, 20))
         }
-        assert.equal(existsSync(lock), false)
+        assert.equal(existsSync(done), true, "the canceled run kept going")
+        await new Promise((resolve) => setTimeout(resolve, 50))
         assert.deepEqual(readFileSync(auth), bytes)
         assert.deepEqual(
             getAccounts(),

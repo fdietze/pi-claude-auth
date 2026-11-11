@@ -9,13 +9,8 @@ import {
     REFRESH_BUSY_MESSAGE,
     type CredentialStoreDeps,
 } from "./credential-store.ts"
-import {
-    ClaudeCliUnavailable,
-    ClaudeRefreshAborted,
-    ClaudeTerminationUnconfirmed,
-} from "./claude-cli.ts"
+import { ClaudeCliUnavailable, ClaudeRefreshTimedOut } from "./claude-cli.ts"
 import type { ClaudeCredentials } from "./keychain.ts"
-import type { FutileRefresh } from "./futile-refresh.ts"
 
 const SOURCE = "file"
 const NOW = 1_700_000_000_000
@@ -25,32 +20,34 @@ function creds(expiresAt: number, accessToken = "access"): ClaudeCredentials {
 }
 
 const FRESH = creds(NOW + 8 * 3_600_000, "fresh")
+const NEAR_EXPIRY = creds(NOW + MIN_VALIDITY_MS - 1_000, "near")
 const EXPIRED = creds(NOW - 1_000, "expired")
 
 /**
- * A fake world: an in-memory credential source with a stamp, a lock that can be
- * held by an imaginary other process, and an instant clock. Everything the
+ * A fake world: an in-memory credential source with a stamp, a `claude` run
+ * that finishes only when the test says so, and a frozen clock. Everything the
  * store does to the outside is observable here — no `claude`, no files, no
  * waiting.
  */
 function makeWorld(initial: ClaudeCredentials | null) {
+    const pending: Array<() => void> = []
     const world = {
         stored: initial,
         stamp: "s0",
         reads: 0,
         refreshRuns: 0,
-        lockHeldByOther: false,
-        lockedByUs: false,
-        marker: null as FutileRefresh | null,
-        slept: 0,
         now: NOW,
-        /** What the delegated `claude` run does to the source. */
+        /** What the delegated `claude` run does to the source when it ends. */
         onRefresh: (): void => {
             world.write(FRESH)
         },
         write(next: ClaudeCredentials | null): void {
             world.stored = next
             world.stamp = `s${Number(world.stamp.slice(1)) + 1}`
+        },
+        /** Let every running `claude` finish. */
+        finishRuns(): void {
+            for (const finish of pending.splice(0)) finish()
         },
     }
 
@@ -60,33 +57,38 @@ function makeWorld(initial: ClaudeCredentials | null) {
             return world.stored
         },
         stampSource: () => world.stamp,
-        acquireRefreshLock: () => {
-            if (world.lockHeldByOther) return "held"
-            world.lockedByUs = true
-            return {
-                release: () => {
-                    world.lockedByUs = false
-                },
-            }
-        },
-        runClaudeRefresh: async () => {
+        runClaudeRefresh: () => {
             world.refreshRuns++
-            world.onRefresh()
-        },
-        readFutileRefresh: () => world.marker,
-        writeFutileRefresh: (marker) => {
-            world.marker = marker
+            return new Promise<void>((resolve, reject) => {
+                pending.push(() => {
+                    try {
+                        world.onRefresh()
+                        resolve()
+                    } catch (err) {
+                        reject(err)
+                    }
+                })
+            })
         },
         now: () => world.now,
-        sleep: async (ms) => {
-            world.slept += ms
-            world.now += ms
-        },
     }
 
     // The store keeps this exact deps object, so tests can still swap a single
-    // behaviour (a slow lock holder, a failing CLI) after construction.
+    // behaviour after construction.
     return { world, deps, store: new CredentialStore(deps) }
+}
+
+/** Let pending promise callbacks run. */
+const settle = () => new Promise((resolve) => setImmediate(resolve))
+
+/** Await `promise` while the fake `claude` completes. */
+async function withRunsFinished<T>(
+    world: ReturnType<typeof makeWorld>["world"],
+    promise: Promise<T>,
+): Promise<T> {
+    await settle()
+    world.finishRuns()
+    return promise
 }
 
 test("read: re-reads only when the source stamp changed", () => {
@@ -119,333 +121,171 @@ test("read: re-reads every time when the source has no stamp", () => {
     assert.equal(store.read(SOURCE)?.accessToken, "rotated")
 })
 
-test("ensureFresh: valid credentials never spawn a refresh", async () => {
+test("ensureFresh: fresh credentials never spawn a refresh", async () => {
     const { world, store } = makeWorld(FRESH)
-    const result = await store.ensureFresh(SOURCE)
-    assert.equal(result.accessToken, "fresh")
+    assert.equal((await store.ensureFresh(SOURCE)).accessToken, "fresh")
     assert.equal(world.refreshRuns, 0)
 })
 
-test("ensureFresh: credentials inside the validity window are refreshed", async () => {
-    const { world, store } = makeWorld(creds(NOW + MIN_VALIDITY_MS - 1_000))
-    const result = await store.ensureFresh(SOURCE)
+test("ensureFresh: usable credentials near expiry start a run and return at once", async () => {
+    const { world, store } = makeWorld(NEAR_EXPIRY)
+    // Resolves although the run has not finished: pi holds its auth.json lock.
+    assert.equal((await store.ensureFresh(SOURCE)).accessToken, "near")
+    assert.equal(world.refreshRuns, 1)
+
+    // Requests during the run join it instead of spawning another.
+    assert.equal((await store.ensureFresh(SOURCE)).accessToken, "near")
+    assert.equal(world.refreshRuns, 1)
+
+    // The next request after the run sees what it wrote.
+    world.finishRuns()
+    await settle()
+    assert.equal((await store.ensureFresh(SOURCE)).accessToken, "fresh")
+    assert.equal(world.refreshRuns, 1)
+})
+
+test("ensureFresh: expired credentials wait for the run and return its result", async () => {
+    const { world, store } = makeWorld(EXPIRED)
+    const result = await withRunsFinished(world, store.ensureFresh(SOURCE))
     assert.equal(result.accessToken, "fresh")
     assert.equal(world.refreshRuns, 1)
 })
 
-test("ensureFresh: expired credentials delegate exactly one refresh", async () => {
+test("ensureFresh: concurrent callers share one run", async () => {
     const { world, store } = makeWorld(EXPIRED)
-
-    const result = await store.ensureFresh(SOURCE)
-
-    assert.equal(result.accessToken, "fresh")
+    const results = Promise.all([
+        store.ensureFresh(SOURCE),
+        store.ensureFresh(SOURCE),
+        store.ensureFresh(SOURCE),
+    ])
+    const tokens = (await withRunsFinished(world, results)).map(
+        (c) => c.accessToken,
+    )
+    assert.deepEqual(tokens, ["fresh", "fresh", "fresh"])
     assert.equal(world.refreshRuns, 1)
-    assert.equal(world.lockedByUs, false, "lock must be released")
 })
 
-test("ensureFresh: no second refresh when the lock holder already refreshed", async () => {
+test("ensureFresh: the source refreshed by someone else spawns nothing", async () => {
     const { world, store } = makeWorld(EXPIRED)
-    // First read caches the expired credentials, then another process refreshes
-    // and releases the lock before we take it.
     store.read(SOURCE)
     world.write(FRESH)
-
-    const result = await store.ensureFresh(SOURCE)
-
-    assert.equal(result.accessToken, "fresh")
+    assert.equal((await store.ensureFresh(SOURCE)).accessToken, "fresh")
     assert.equal(world.refreshRuns, 0)
 })
 
-test("ensureFresh: a waiter uses the other process's result without spawning", async () => {
-    const { world, deps, store } = makeWorld(EXPIRED)
-    world.lockHeldByOther = true
-    // The holder's `claude` writes the refreshed credentials while we wait.
-    const sleep = deps.sleep
-    let ticks = 0
-    deps.sleep = async (ms) => {
-        await sleep(ms)
-        if (++ticks === 3) world.write(FRESH)
-    }
+test("ensureFresh: abort while expired reports a running refresh; the run continues", async () => {
+    const { world, store } = makeWorld(EXPIRED)
+    const caller = new AbortController()
+    const result = store.ensureFresh(SOURCE, caller.signal)
+    await settle()
+    caller.abort(new Error("timed out"))
+    await assert.rejects(result, { message: REFRESH_BUSY_MESSAGE })
 
-    const result = await store.ensureFresh(SOURCE)
-
-    assert.equal(result.accessToken, "fresh")
-    assert.equal(world.refreshRuns, 0)
-    assert.ok(world.slept > 0, "waiter polled the source")
+    // The run was not stopped; its result serves the next request.
+    world.finishRuns()
+    await settle()
+    assert.equal((await store.ensureFresh(SOURCE)).accessToken, "fresh")
+    assert.equal(world.refreshRuns, 1)
 })
 
-test("ensureFresh: a permanently busy lock fails as transient, without spawning", async () => {
+test("ensureFresh: an already aborted caller starts nothing", async () => {
     const { world, store } = makeWorld(EXPIRED)
-    world.lockHeldByOther = true
-
-    // Callers distinguish the two by type: only an unusable login may make them
-    // look for another account, contention says nothing about the login.
-    await assert.rejects(store.ensureFresh(SOURCE), (err: Error) => {
-        assert.equal(err.message, REFRESH_BUSY_MESSAGE)
-        assert.equal(err instanceof LoginUnusable, false)
-        return true
-    })
+    const caller = new AbortController()
+    caller.abort()
+    await assert.rejects(store.ensureFresh(SOURCE, caller.signal))
     assert.equal(world.refreshRuns, 0)
 })
 
-test("ensureFresh: still-expired after the refresh reports an expired login", async () => {
+test("a dead login is reported and not retried until its state changes", async () => {
     const { world, store } = makeWorld(EXPIRED)
-    world.onRefresh = () => {} // `claude` ran but did not log in
+    world.onRefresh = () => {} // the CLI cannot refresh this login
 
-    await assert.rejects(store.ensureFresh(SOURCE), (err: Error) => {
-        assert.equal(err.message, LOGIN_EXPIRED_MESSAGE)
-        assert.ok(err instanceof LoginUnusable)
-        return true
-    })
-    assert.equal(world.refreshRuns, 1)
-    assert.equal(world.lockedByUs, false, "lock must be released")
-})
-
-test("ensureFresh: a failing claude run still uses what it wrote", async () => {
-    const { world, deps, store } = makeWorld(EXPIRED)
-    deps.runClaudeRefresh = async () => {
-        world.refreshRuns++
-        world.write(FRESH)
-        throw new Error("claude exited with 1")
-    }
-
-    const result = await store.ensureFresh(SOURCE)
-    assert.equal(result.accessToken, "fresh")
-})
-
-test("a failed login is remembered and retried only after the source changes", async () => {
-    const { world, store } = makeWorld(EXPIRED)
-    world.onRefresh = () => {} // `claude` cannot log in anymore
-
-    await assert.rejects(store.ensureFresh(SOURCE), {
-        message: LOGIN_EXPIRED_MESSAGE,
-    })
-    assert.equal(world.refreshRuns, 1)
-    assert.equal(world.marker?.source, SOURCE)
-
-    // Same source state: no second `claude`, no waiting, just the message.
-    await assert.rejects(store.ensureFresh(SOURCE), {
-        message: LOGIN_EXPIRED_MESSAGE,
-    })
-    assert.equal(world.refreshRuns, 1)
+    assert.equal(store.loginProblem(SOURCE), null)
+    await assert.rejects(
+        withRunsFinished(world, store.ensureFresh(SOURCE)),
+        (err) => err instanceof LoginUnusable,
+    )
     assert.equal(store.loginProblem(SOURCE), LOGIN_EXPIRED_MESSAGE)
 
-    // The user ran `claude` and logged in: the source changed, so retry.
-    world.onRefresh = () => world.write(FRESH)
-    world.write(creds(NOW - 500, "still-expired-but-new"))
-    assert.equal(store.loginProblem(SOURCE), null)
-
-    const result = await store.ensureFresh(SOURCE)
-    assert.equal(result.accessToken, "fresh")
-    assert.equal(world.refreshRuns, 2)
-    assert.equal(world.marker, null, "successful refresh clears the record")
-})
-
-test("a marker from another account does not block this one", () => {
-    const { world, store } = makeWorld(EXPIRED)
-    world.marker = { source: "Claude Code-credentials", state: world.stamp }
-    assert.equal(store.loginProblem(SOURCE), null)
-})
-
-test("credentials short of the safety margin are used, not declared dead", async () => {
-    // The CLI refuses to refresh a token it still considers good.
-    const { world, store } = makeWorld(creds(NOW + 30_000, "almost-expired"))
-    world.onRefresh = () => {}
-
-    const result = await store.ensureFresh(SOURCE)
-
-    assert.equal(result.accessToken, "almost-expired")
-    assert.equal(world.refreshRuns, 1)
-    assert.equal(store.loginProblem(SOURCE), null, "not a login problem yet")
-
-    // A second request in the same window must not run the CLI again.
-    await store.ensureFresh(SOURCE)
-    assert.equal(world.refreshRuns, 1)
-
-    // Once the token is actually expired, the CLI is worth another try.
-    world.now = NOW + 60_000
-    world.onRefresh = () => world.write(FRESH)
-    assert.equal((await store.ensureFresh(SOURCE)).accessToken, "fresh")
-    assert.equal(world.refreshRuns, 2)
-})
-
-test("a transient lock timeout is not remembered as a failed login", async () => {
-    const { world, store } = makeWorld(EXPIRED)
-    world.lockHeldByOther = true
-
-    await assert.rejects(store.ensureFresh(SOURCE), {
-        message: REFRESH_BUSY_MESSAGE,
-    })
-    assert.equal(world.marker, null)
-})
-
-test("a waiter does not repeat a futile refresh the holder already tried", async () => {
-    const { world, deps, store } = makeWorld(EXPIRED)
-    world.lockHeldByOther = true
-    // The holder runs `claude`, learns it changes nothing, and releases.
-    let ticks = 0
-    const sleep = deps.sleep
-    deps.sleep = async (ms) => {
-        await sleep(ms)
-        if (++ticks === 2) {
-            world.marker = { source: SOURCE, state: `${world.stamp}|expired` }
-            world.lockHeldByOther = false
-        }
-    }
-
+    // Same state: no second run.
     await assert.rejects(store.ensureFresh(SOURCE), {
         message: LOGIN_EXPIRED_MESSAGE,
     })
-    assert.equal(world.refreshRuns, 0, "the CLI must not run a second time")
+    assert.equal(world.refreshRuns, 1)
+
+    // A new login rewrites the source: the problem is gone.
+    world.write(FRESH)
+    assert.equal(store.loginProblem(SOURCE), null)
+    assert.equal((await store.ensureFresh(SOURCE)).accessToken, "fresh")
+
+    // A rewrite that is still expired is a new state and earns one more run.
+    world.write(creds(NOW - 500, "still-expired"))
+    await assert.rejects(withRunsFinished(world, store.ensureFresh(SOURCE)))
+    assert.equal(world.refreshRuns, 2)
+})
+
+test("an unrefreshed usable token is used and retried only once expired", async () => {
+    const { world, store } = makeWorld(NEAR_EXPIRY)
+    world.onRefresh = () => {}
+
+    await store.ensureFresh(SOURCE)
+    world.finishRuns()
+    await settle()
+    assert.equal((await store.ensureFresh(SOURCE)).accessToken, "near")
+    assert.equal(world.refreshRuns, 1)
+    assert.equal(store.loginProblem(SOURCE), null)
+
+    // Crossing expiry changes the state: worth asking again.
+    world.now = NEAR_EXPIRY.expiresAt + 1
+    const retried = store.ensureFresh(SOURCE)
+    world.onRefresh = () => world.write(FRESH)
+    assert.equal((await withRunsFinished(world, retried)).accessToken, "fresh")
+    assert.equal(world.refreshRuns, 2)
+})
+
+test("a timeout is transient: reported as such, not remembered", async () => {
+    const { world, store } = makeWorld(EXPIRED)
+    world.onRefresh = () => {
+        throw new ClaudeRefreshTimedOut("timed out")
+    }
+    await assert.rejects(
+        withRunsFinished(world, store.ensureFresh(SOURCE)),
+        ClaudeRefreshTimedOut,
+    )
+    assert.equal(store.loginProblem(SOURCE), null)
+    await assert.rejects(withRunsFinished(world, store.ensureFresh(SOURCE)))
+    assert.equal(world.refreshRuns, 2)
+})
+
+test("a timed-out run that still rotated is used", async () => {
+    const { world, store } = makeWorld(EXPIRED)
+    world.onRefresh = () => {
+        world.write(FRESH)
+        throw new ClaudeRefreshTimedOut("timed out after writing")
+    }
+    const result = await withRunsFinished(world, store.ensureFresh(SOURCE))
+    assert.equal(result.accessToken, "fresh")
 })
 
 test("an unrunnable claude CLI is reported as such and not remembered", async () => {
-    const { world, deps, store } = makeWorld(EXPIRED)
-    deps.runClaudeRefresh = async () => {
-        world.refreshRuns++
+    const { world, store } = makeWorld(EXPIRED)
+    world.onRefresh = () => {
         throw new ClaudeCliUnavailable("spawn claude ENOENT")
     }
-
-    await assert.rejects(store.ensureFresh(SOURCE), (err: Error) => {
-        assert.equal(err.message, CLAUDE_UNAVAILABLE_MESSAGE)
-        assert.equal(err instanceof LoginUnusable, false)
-        return true
+    await assert.rejects(withRunsFinished(world, store.ensureFresh(SOURCE)), {
+        message: CLAUDE_UNAVAILABLE_MESSAGE,
     })
-    assert.equal(world.marker, null, "a CLI that never ran proves nothing")
-    assert.equal(world.lockedByUs, false)
-
-    // The next attempt must try again rather than stay silent.
-    deps.runClaudeRefresh = async () => {
-        world.refreshRuns++
-        world.write(FRESH)
-    }
-    assert.equal((await store.ensureFresh(SOURCE)).accessToken, "fresh")
+    assert.equal(store.loginProblem(SOURCE), null)
 })
 
-test("ensureFresh: confirmed timeout is transient and does not mark login futile", async () => {
-    const { world, deps, store } = makeWorld(EXPIRED)
-    deps.runClaudeRefresh = async () => {
-        throw new ClaudeRefreshAborted("incomplete rotation")
+test("a failing re-read after a run nobody waits for is contained", async () => {
+    const { world, deps, store } = makeWorld(NEAR_EXPIRY)
+    await store.ensureFresh(SOURCE)
+    deps.readSource = () => {
+        throw new Error("keychain locked")
     }
-    await assert.rejects(store.ensureFresh(SOURCE), ClaudeRefreshAborted)
-    assert.equal(world.marker, null)
-    assert.equal(world.lockedByUs, false)
-})
-
-test("ensureFresh: unconfirmed termination retains barrier", async () => {
-    const { world, deps, store } = makeWorld(EXPIRED)
-    deps.runClaudeRefresh = async () => {
-        throw new ClaudeTerminationUnconfirmed("uncertain")
-    }
-    await assert.rejects(
-        store.ensureFresh(SOURCE),
-        ClaudeTerminationUnconfirmed,
-    )
-    assert.equal(world.lockedByUs, true)
-    assert.equal(world.marker, null)
-})
-
-function deferred<T>() {
-    let resolve!: (value: T) => void
-    let reject!: (error: Error) => void
-    const promise = new Promise<T>((yes, no) => {
-        resolve = yes
-        reject = no
-    })
-    return { promise, resolve, reject }
-}
-
-/** pi's abort (its hard refresh timeout) surfaces as the busy message. */
-function busyBecause(reason: string) {
-    return (err: Error) => {
-        assert.equal(err.message, REFRESH_BUSY_MESSAGE)
-        assert.equal((err.cause as Error).message, reason)
-        return true
-    }
-}
-
-test("aborted before ownership never takes lock or launches CLI", async () => {
-    const { world, deps, store } = makeWorld(EXPIRED)
-    let acquisitions = 0
-    deps.acquireRefreshLock = () => {
-        acquisitions++
-        return "held"
-    }
-    const caller = new AbortController()
-    caller.abort(new Error("caller canceled"))
-    await assert.rejects(
-        store.ensureFresh(SOURCE, caller.signal),
-        /caller canceled/,
-    )
-    assert.equal(acquisitions, 0)
-    assert.equal(world.refreshRuns, 0)
-})
-
-test("canceled busy waiter never launches later", async () => {
-    const { world, deps, store } = makeWorld(EXPIRED)
-    world.lockHeldByOther = true
-    const sleeping = deferred<void>()
-    deps.sleep = () => sleeping.promise
-    const caller = new AbortController()
-    const result = store.ensureFresh(SOURCE, caller.signal)
-    caller.abort(new Error("cancel waiter"))
-    await assert.rejects(result, busyBecause("cancel waiter"))
-    world.lockHeldByOther = false
-    sleeping.resolve()
-    await new Promise((resolve) => setImmediate(resolve))
-    assert.equal(world.refreshRuns, 0)
-    assert.equal(world.lockedByUs, false)
-})
-
-test("aborted owner returns promptly but job, reread and marker stay locked", async () => {
-    const { world, deps, store } = makeWorld(EXPIRED)
-    const command = deferred<void>()
-    let ownerSignal: AbortSignal | undefined
-    deps.runClaudeRefresh = (signal) => {
-        world.refreshRuns++
-        ownerSignal = signal
-        return command.promise
-    }
-    const writeMarker = deps.writeFutileRefresh
-    deps.writeFutileRefresh = (marker) => {
-        assert.equal(world.lockedByUs, true, "finalization is inside barrier")
-        writeMarker(marker)
-    }
-    const caller = new AbortController()
-    const result = store.ensureFresh(SOURCE, caller.signal)
-    caller.abort(new Error("stop waiting"))
-    await assert.rejects(result, busyBecause("stop waiting"))
-    assert.equal(world.lockedByUs, true)
-    assert.equal(ownerSignal?.aborted, false)
-    world.write(FRESH)
-    command.resolve()
-    await new Promise((resolve) => setImmediate(resolve))
-    assert.equal(world.lockedByUs, false)
-    assert.equal((await store.ensureFresh(SOURCE)).accessToken, "fresh")
-    assert.equal(world.refreshRuns, 1)
-})
-
-test("abandoned owner rejection is observed and still records unchanged state", async () => {
-    const { world, deps, store } = makeWorld(EXPIRED)
-    const command = deferred<void>()
-    deps.runClaudeRefresh = () => command.promise
-    const caller = new AbortController()
-    const result = store.ensureFresh(SOURCE, caller.signal)
-    caller.abort(new Error("abandon"))
-    await assert.rejects(result, busyBecause("abandon"))
-    command.reject(new Error("failed command"))
-    await new Promise((resolve) => setImmediate(resolve))
-    assert.equal(world.lockedByUs, false)
-    assert.ok(world.marker)
-})
-
-test("confirmed timeout accepts authoritative fresh reread without futile marker", async () => {
-    const { world, deps, store } = makeWorld(EXPIRED)
-    deps.runClaudeRefresh = async () => {
-        world.write(FRESH)
-        throw new ClaudeRefreshAborted("timed out mid-rotation")
-    }
-    assert.equal((await store.ensureFresh(SOURCE)).accessToken, "fresh")
-    assert.equal(world.marker, null)
-    assert.equal(world.lockedByUs, false)
+    // Would be an unhandled rejection (and fail this test) if not contained.
+    world.finishRuns()
+    await settle()
+    await settle()
 })

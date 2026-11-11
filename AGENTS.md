@@ -8,21 +8,16 @@ pi extension that reads Claude Code OAuth credentials. Requires pi 0.85+.
   pi receives access/expiry and an empty refresh token, never the real one.
 - **Every consuming pi process must load this extension**, including children.
   Otherwise pi's built-in refresh attempts the empty token and fails with 400.
-- **Caller cancellation ends waiting, not an owned refresh.** Before ownership,
-  an aborted waiter must not launch a CLI. After launch, the owner retains the
-  refresh lock through command completion and authoritative re-read. No
-  background `auth.json` writes or canceled-caller account switching.
-- **Refresh coordination is per Claude store, not per pi profile.** Lock and
-  futile-attempt record live in `~/.claude/pi-claude-auth/`. The lock is
-  never taken over and never expires: no cross-process proof of owner death
-  exists (pi sessions may run in separate PID namespaces, so recorded PIDs are
-  meaningless to other processes). A crashed owner strands it; recovery is
-  the manual step in `README.md`. Do not add PID, time or file-lock based
-  takeover. The lock is published by atomic rename of a complete dir, so it
-  is never empty. Unix completion covers direct-child close plus its original
-  process-group probe, within the owner's own PID namespace; Windows covers the
-  direct child only. Escaped/detached descendants and independently launched
-  Claude processes are outside this guarantee.
+- **Claude Code's own refresh lock guarantees a single rotator.** It
+  serializes concurrent refreshes across processes and re-reads the token
+  under the lock. This extension keeps no cross-process lock or record; it
+  only joins concurrent requests to one CLI run per process and remembers, in
+  memory, a credential state a completed run did not refresh.
+- **`refreshToken` returns at once while the token is still usable.** pi calls
+  it holding its `auth.json` lock (other pi processes give up after 30s), so it
+  starts the CLI run without waiting for it. Only an expired token waits, and
+  only until pi's signal; the signal never stops the run, only its own
+  timeout (SIGTERM, then SIGKILL) does.
 - **pi's `auth.json` keeps pi's locking protocol.** Only a missing file may
   initialize an empty object. Reject invalid/non-object contents without changing
   them; preserve unrelated providers and replace valid contents atomically.
@@ -35,22 +30,19 @@ pi extension that reads Claude Code OAuth credentials. Requires pi 0.85+.
 |------|----------|
 | `src/index.ts` | Provider registration, OAuth hooks, session notification |
 | `src/credentials.ts` | Account selection and credential-store effects |
-| `src/credential-store.ts` | Re-read, refresh ownership, retry suppression, caller waits; injected effects |
+| `src/credential-store.ts` | Re-read, single-flight CLI run, in-memory retry suppression, caller waits; injected effects |
 | `src/keychain.ts` | Claude credentials from macOS Keychain or file |
-| `src/claude-cli.ts` | Delegated CLI execution and its independent timeout |
+| `src/claude-cli.ts` | Delegated CLI run, its timeout and kill policy; version detection |
 | `src/dir-lock.ts` | pi-compatible directory lock for `auth.json` |
-| `src/refresh-lock.ts` | Non-expiring exclusion for extension-launched refreshes; atomic publish, owner-checked release |
-| `src/futile-refresh.ts` | Shared unchanged-attempt record; not proof of revocation |
 | `src/auth-json.ts` | Seed/remove pi credentials, parsing boundary, atomic writes |
-| `src/paths.ts` | Credential, pi-profile, and shared-coordination paths |
+| `src/paths.ts` | Credential and pi-profile paths |
 | `src/signing.ts`, `src/transforms.ts` | Claude Code identity and billing header |
 | `src/logger.ts` | Opt-in redacted diagnostics (`PI_CLAUDE_AUTH_DEBUG`) |
 
 ## Verification and release
 
 `main` is the release channel (`@main`, no version tags). Keep it green.
-Stop old extension processes before upgrading: previous lock namespaces do not
-coordinate with the current one. See `README.md` for recovery and limitations.
+See `README.md` for limitations.
 
 Analyze callers and affected flows before edits; review the diff before commits.
 `just all` (lint, build, test) must pass before every commit. `just smoke` must

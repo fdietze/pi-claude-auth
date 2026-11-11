@@ -12,7 +12,6 @@ import {
     LoginUnusable,
     NO_CREDENTIALS_MESSAGE,
 } from "./credential-store.ts"
-import { acquireRefreshLock } from "./refresh-lock.ts"
 import {
     keychainContainerPath,
     readAccountCredentials,
@@ -20,7 +19,6 @@ import {
     type ClaudeAccount,
     type ClaudeCredentials,
 } from "./keychain.ts"
-import { readFutileRefresh, writeFutileRefresh } from "./futile-refresh.ts"
 import { log } from "./logger.ts"
 import { getClaudeCredentialsPath, getPiAgentDir } from "./paths.ts"
 
@@ -56,12 +54,8 @@ function stampSource(source: string): string | null {
 const store = new CredentialStore({
     readSource: readAccountCredentials,
     stampSource,
-    acquireRefreshLock,
     runClaudeRefresh: refreshViaClaudeCli,
-    readFutileRefresh,
-    writeFutileRefresh,
     now: Date.now,
-    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 })
 
 export function initAccounts(accounts: ClaudeAccount[]): void {
@@ -135,7 +129,7 @@ export function getActiveCredentials(): ClaudeCredentials | null {
 
 /**
  * Active account's credentials, delegating a refresh to the Claude CLI when
- * they are at or near expiry. Throws with an actionable message when no usable
+ * they are at or near expiry (see CredentialStore.ensureFresh). Throws with an actionable message when no usable
  * credentials can be obtained.
  */
 export async function refreshActiveCredentials(
@@ -146,11 +140,11 @@ export async function refreshActiveCredentials(
     try {
         return await store.ensureFresh(account.source, signal)
     } catch (err) {
-        // Only a dead source justifies looking elsewhere. Lock contention or an
+        // Only a dead source justifies looking elsewhere. A slow refresh or an
         // unrunnable CLI affect every account equally, and switching accounts
         // over them would silently move the user to another subscription.
-        signal?.throwIfAborted()
-        if (!(err instanceof LoginUnusable)) throw err
+        // A canceled caller gets the original error, never a fallback.
+        if (!(err instanceof LoginUnusable) || signal?.aborted) throw err
         // The account list is a snapshot from startup. On macOS, logging in
         // again can make Claude Code write a *different* Keychain item, which
         // would leave this process pinned to a dead one for its whole life.

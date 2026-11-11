@@ -98,10 +98,6 @@ is required — the extension has already seeded your Claude Code credentials.
 
 ## Upgrading
 
-Stop all pi sessions using this extension, including children, and let any
-delegated Claude CLI finish before updating. Earlier versions use a different
-refresh-lock namespace and cannot safely run alongside this version.
-
 Reinstall to pull the latest `main`:
 
 ```bash

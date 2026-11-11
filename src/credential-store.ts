@@ -1,48 +1,31 @@
-import {
-    CLAUDE_TIMEOUT_MS,
-    ClaudeCliUnavailable,
-    ClaudeRefreshAborted,
-    ClaudeTerminationUnconfirmed,
-} from "./claude-cli.ts"
+import { ClaudeCliUnavailable, ClaudeRefreshTimedOut } from "./claude-cli.ts"
 import type { ClaudeCredentials } from "./keychain.ts"
-import type { RefreshLock } from "./refresh-lock.ts"
-import type { FutileRefresh } from "./futile-refresh.ts"
 import { log } from "./logger.ts"
 
 /**
- * How much validity we require before considering credentials usable.
+ * How much validity we require before considering credentials fresh.
  *
  * pi refreshes an OAuth credential as soon as it is within five minutes of
  * expiry (pi-ai's DEFAULT_OAUTH_MINIMUM_VALIDITY_MS). Our threshold must not be
  * shorter: otherwise pi would ask us to refresh, we would answer "still fresh",
- * and pi would ask again on the very next request.
+ * and pi would ask again on the very next request. Claude Code refreshes from
+ * the same five-minute margin, so a delegated run near expiry does rotate.
  */
 export const MIN_VALIDITY_MS = 5 * 60_000
 
 /**
- * How long a waiter without a caller signal watches for another process's
- * refresh result: the owner's CLI budget plus finalization time. pi's own
- * signal usually ends the wait much earlier (see ensureFresh).
- */
-const LOCK_WAIT_MS = CLAUDE_TIMEOUT_MS + 10_000
-const LOCK_POLL_MS = 250
-
-/**
  * A completed attempt left unusable credentials. A new login or source change
  * permits another attempt; this is not proof of permanent revocation.
- * Distinct from transient failures (lock contention, an unrunnable CLI), which
- * say nothing about the login and must not trigger fallbacks.
+ * Distinct from transient failures (a timeout, an unrunnable CLI), which say
+ * nothing about the login and must not trigger fallbacks.
  */
 export class LoginUnusable extends Error {}
 
 export const LOGIN_EXPIRED_MESSAGE =
     "Claude Code login expired or revoked. Run `claude` and log in, then retry."
 
-// A crashed owner strands the lock and nothing can tell it from a running one,
-// so the busy answer carries the recovery step. A healthy refresh ends within
-// CLAUDE_TIMEOUT_MS (1 minute), hence the time bound on the advice.
 export const REFRESH_BUSY_MESSAGE =
-    "A Claude Code credential refresh is still running. Retry in a moment. If this persists for over 2 minutes and no pi or `claude` refresh is running, delete ~/.claude/pi-claude-auth/refresh.lock (its `owner` file shows when it was taken)."
+    "A Claude Code credential refresh is still running. Retry in a moment."
 
 export const CLAUDE_UNAVAILABLE_MESSAGE =
     "Could not run the `claude` CLI to refresh the Claude Code credentials. Make sure it is installed and on PATH."
@@ -62,16 +45,9 @@ export interface CredentialStoreDeps {
      * or null when it cannot be determined; null forces a re-read.
      */
     stampSource(source: string): string | null
-    /** Try to take the per-user refresh barrier; "held" when someone has it. */
-    acquireRefreshLock(): RefreshLock | "held"
-    /** Delegate a refresh to the Claude CLI; `signal` stops the run. */
-    runClaudeRefresh(signal: AbortSignal): Promise<void>
-    /** Read the shared record of a refresh that achieved nothing. */
-    readFutileRefresh(): FutileRefresh | null
-    /** Record a futile refresh, or clear the record when passed null. */
-    writeFutileRefresh(marker: FutileRefresh | null): void
+    /** Delegate a refresh to the Claude CLI; only its own timeout stops it. */
+    runClaudeRefresh(): Promise<void>
     now(): number
-    sleep(ms: number): Promise<void>
 }
 
 interface Snapshot {
@@ -90,15 +66,25 @@ interface SourceState {
 }
 
 /**
- * Reads Claude Code credentials and, when they expire, has the Claude CLI
- * refresh them under a shared exclusion barrier.
+ * Reads Claude Code credentials and, when they near expiry, has the Claude CLI
+ * refresh them.
  *
  * pi is a pure reader here: it never rotates the single-use refresh token,
- * because a second rotator racing Claude Code gets the session revoked.
+ * because a second rotator racing Claude Code gets the session revoked. Claude
+ * Code's own refresh lock makes concurrent CLI runs (from this or any other
+ * process) rotate once, so this store only avoids redundant runs in-process.
  */
 export class CredentialStore {
     private readonly deps: CredentialStoreDeps
     private readonly snapshots = new Map<string, Snapshot>()
+    /** The CLI run per source; resolves to its failure, never rejects. */
+    private readonly runs = new Map<string, Promise<unknown>>()
+    /**
+     * State identity a completed CLI run left unrefreshed, per source. The
+     * same state cannot yield a different answer, so it is not asked about
+     * again. In memory only: a new process retries once.
+     */
+    private readonly futile = new Map<string, string>()
 
     constructor(deps: CredentialStoreDeps) {
         this.deps = deps
@@ -127,20 +113,22 @@ export class CredentialStore {
     /**
      * Message to show when the credentials are unusable and a refresh for
      * exactly this state has already been tried in vain, null otherwise. Costs
-     * one stat and one small file read, so it is safe to call on every session
-     * start and every request.
+     * at most one stat and one read, so it is safe on every request.
      */
     loginProblem(source: string): string | null {
-        const marker = this.deps.readFutileRefresh()
-        if (!marker || marker.source !== source) return null
+        const futile = this.futile.get(source)
+        if (futile === undefined) return null
         const state = this.stateOf(source)
         if (state.usable) return null
-        return marker.state === state.identity ? LOGIN_EXPIRED_MESSAGE : null
+        return futile === state.identity ? LOGIN_EXPIRED_MESSAGE : null
     }
 
     /**
-     * Credentials valid for at least MIN_VALIDITY_MS, delegating a refresh to
-     * the Claude CLI when needed. Throws with an actionable message when no
+     * Credentials to use now, delegating a refresh to the Claude CLI when they
+     * near expiry. Returns still-usable credentials without waiting for that
+     * run: pi calls this while holding its `auth.json` lock, which other pi
+     * processes give up on after 30s. Waits (until `signal`) only when the
+     * credentials are expired. Throws with an actionable message when no
      * usable credentials can be obtained.
      */
     async ensureFresh(
@@ -158,36 +146,86 @@ export class CredentialStore {
             return current.credentials
         }
 
-        log("refresh_needed", {
-            source,
-            expiresAt: current.credentials?.expiresAt,
-        })
-
-        // Asking again for a state we already asked about cannot give a new
-        // answer, so spend nothing on it.
         const state = stateOf(current, this.deps.now())
-        const marker = this.deps.readFutileRefresh()
-        if (marker?.source === source && marker.state === state.identity) {
+        if (this.futile.get(source) === state.identity) {
             log("refresh_skipped_futile", { source, usable: state.usable })
             if (state.usable && current.credentials) return current.credentials
             throw new LoginUnusable(LOGIN_EXPIRED_MESSAGE)
         }
 
+        const run = this.startRefresh(source)
+        // The common case: pi asks five minutes early. The next request
+        // re-reads whatever the run wrote.
+        if (state.usable && current.credentials) return current.credentials
+
+        let failure: unknown
         try {
-            return await waitForCaller(
-                this.delegateRefresh(source, signal),
-                signal,
-            )
+            failure = await waitForCaller(run, signal)
         } catch (err) {
-            // pi 1.0.4 bounds refreshToken with a hard 15s AbortSignal.timeout
-            // (DEFAULT_OAUTH_REFRESH_TIMEOUT_MS), shorter than a cold CLI run
-            // or a wait for another owner. Its bare "The operation timed out"
-            // hides that a refresh is still in flight; say so instead.
-            if (signal?.aborted && err === signal.reason) {
-                throw new Error(REFRESH_BUSY_MESSAGE, { cause: err })
-            }
-            throw err
+            // pi bounds refreshToken with a 15s AbortSignal.timeout, which a
+            // cold CLI run can outlast. Its bare "The operation timed out"
+            // hides that the run continues; say so instead.
+            throw new Error(REFRESH_BUSY_MESSAGE, { cause: err })
         }
+
+        const after = this.read(source)
+        if (after && after.expiresAt > this.deps.now()) return after
+        if (failure instanceof ClaudeRefreshTimedOut) throw failure
+        if (failure instanceof ClaudeCliUnavailable) {
+            throw new Error(CLAUDE_UNAVAILABLE_MESSAGE, { cause: failure })
+        }
+        throw new LoginUnusable(
+            after ? LOGIN_EXPIRED_MESSAGE : NO_CREDENTIALS_MESSAGE,
+        )
+    }
+
+    /** Start the CLI run for a source, or join the one in flight. */
+    private startRefresh(source: string): Promise<unknown> {
+        const inFlight = this.runs.get(source)
+        if (inFlight) return inFlight
+        // A failing re-read (e.g. a locked Keychain) must not reject a run
+        // nobody may be waiting for.
+        const run = this.refresh(source)
+            .catch((err: unknown) => err)
+            .finally(() => this.runs.delete(source))
+        this.runs.set(source, run)
+        return run
+    }
+
+    private async refresh(source: string): Promise<unknown> {
+        log("refresh_started", { source })
+        let failure: unknown
+        try {
+            await this.deps.runClaudeRefresh()
+        } catch (err) {
+            failure = err
+            log("refresh_command_failed", { source, error: String(err) })
+        }
+
+        const after = this.reload(source)
+        if (after.credentials && this.isFresh(after.credentials)) {
+            log("refresh_success", { source })
+            this.futile.delete(source)
+            return failure
+        }
+        // A timeout or a missing CLI says nothing about this state; a later
+        // request may try again.
+        if (
+            failure instanceof ClaudeRefreshTimedOut ||
+            failure instanceof ClaudeCliUnavailable
+        ) {
+            return failure
+        }
+        // The CLI completed and left this state as it was. Crossing expiry or
+        // a new credential write changes the identity and permits a retry.
+        const state = stateOf(after, this.deps.now())
+        this.futile.set(source, state.identity)
+        log("refresh_ineffective", {
+            source,
+            expiresAt: after.credentials?.expiresAt,
+            usable: state.usable,
+        })
+        return failure
     }
 
     private stateOf(source: string): SourceState {
@@ -217,109 +255,6 @@ export class CredentialStore {
         this.snapshots.set(source, snapshot)
         return snapshot
     }
-
-    private async delegateRefresh(
-        source: string,
-        signal?: AbortSignal,
-    ): Promise<ClaudeCredentials> {
-        const deadline = this.deps.now() + LOCK_WAIT_MS
-        for (;;) {
-            signal?.throwIfAborted()
-            const lock = this.deps.acquireRefreshLock()
-            if (typeof lock === "object") {
-                // SoC: caller cancellation ends its wait, never the owned job.
-                let release = true
-                try {
-                    return await this.refreshUnderLock(source)
-                } catch (err) {
-                    if (err instanceof ClaudeTerminationUnconfirmed)
-                        release = false
-                    throw err
-                } finally {
-                    if (release) lock.release()
-                }
-            }
-            const waited = this.reload(source)
-            if (waited.credentials && this.isFresh(waited.credentials)) {
-                return waited.credentials
-            }
-            if (this.deps.now() >= deadline)
-                throw new Error(REFRESH_BUSY_MESSAGE)
-            await waitForCaller(this.deps.sleep(LOCK_POLL_MS), signal)
-        }
-    }
-
-    private async refreshUnderLock(source: string): Promise<ClaudeCredentials> {
-        // Double-check under the lock: the previous holder may have just
-        // refreshed, in which case a second CLI run would be pure waste.
-        const before = this.reload(source)
-        if (before.credentials && this.isFresh(before.credentials)) {
-            return before.credentials
-        }
-
-        // It may also have learned that refreshing this exact state achieves
-        // nothing. Checking only before queueing for the lock would let every
-        // waiting process repeat the same futile CLI run in turn.
-        const stateBefore = stateOf(before, this.deps.now())
-        const marker = this.deps.readFutileRefresh()
-        if (
-            marker?.source === source &&
-            marker.state === stateBefore.identity
-        ) {
-            log("refresh_skipped_futile", {
-                source,
-                usable: stateBefore.usable,
-                underLock: true,
-            })
-            if (stateBefore.usable && before.credentials) {
-                return before.credentials
-            }
-            throw new LoginUnusable(LOGIN_EXPIRED_MESSAGE)
-        }
-
-        log("refresh_started", { source })
-        let failure: unknown
-        try {
-            await this.deps.runClaudeRefresh(new AbortController().signal)
-        } catch (err) {
-            failure = err
-            if (err instanceof ClaudeTerminationUnconfirmed) throw err
-            log("refresh_command_failed", { source, error: String(err) })
-        }
-
-        const after = this.reload(source)
-        if (after.credentials && this.isFresh(after.credentials)) {
-            log("refresh_success", { source })
-            this.deps.writeFutileRefresh(null)
-            return after.credentials
-        }
-
-        // A timeout can interrupt rotation. It cannot prove permanent revocation.
-        if (failure instanceof ClaudeRefreshAborted) throw failure
-        if (failure instanceof ClaudeCliUnavailable) {
-            throw new Error(CLAUDE_UNAVAILABLE_MESSAGE, { cause: failure })
-        }
-
-        // The CLI left this state as it was. Remember that, so no process asks
-        // again until the state changes.
-        const state = stateOf(after, this.deps.now())
-        this.deps.writeFutileRefresh({ source, state: state.identity })
-        log("refresh_ineffective", {
-            source,
-            expiresAt: after.credentials?.expiresAt,
-            usable: state.usable,
-        })
-
-        // Credentials short of our safety margin but not actually expired still
-        // work: returning them beats failing the request. The Claude CLI
-        // may refresh once they are past expiry. Crossing expiry changes the
-        // state and lets the next attempt through.
-        if (state.usable && after.credentials) return after.credentials
-
-        throw new LoginUnusable(
-            after.credentials ? LOGIN_EXPIRED_MESSAGE : NO_CREDENTIALS_MESSAGE,
-        )
-    }
 }
 
 /**
@@ -341,22 +276,31 @@ function stateOf(snapshot: Snapshot, now: number): SourceState {
     }
 }
 
-/** Observe the owned promise even when the caller abandons its result. */
+/**
+ * Wait for `job` until `signal` aborts. `job` must never reject: it may outlive
+ * this wait unobserved.
+ *
+ * The run's child process and timers are unref'd, so while a caller waits
+ * nothing else may keep the runtime alive (pi's AbortSignal.timeout does not):
+ * a ref'd timer holds it open until the wait ends.
+ */
 function waitForCaller<T>(job: Promise<T>, signal?: AbortSignal): Promise<T> {
-    if (!signal) return job
+    const keepAlive = setInterval(() => {}, 2 ** 30)
+    if (!signal) return job.finally(() => clearInterval(keepAlive))
     return new Promise((resolve, reject) => {
-        const abort = () => reject(signal.reason)
+        const done = () => {
+            clearInterval(keepAlive)
+            signal.removeEventListener("abort", abort)
+        }
+        const abort = () => {
+            done()
+            reject(signal.reason)
+        }
         signal.addEventListener("abort", abort, { once: true })
-        job.then(
-            (value) => {
-                signal.removeEventListener("abort", abort)
-                resolve(value)
-            },
-            (error) => {
-                signal.removeEventListener("abort", abort)
-                reject(error)
-            },
-        )
+        job.then((value) => {
+            done()
+            resolve(value)
+        })
         if (signal.aborted) abort()
     })
 }

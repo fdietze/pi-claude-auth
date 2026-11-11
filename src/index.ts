@@ -184,7 +184,8 @@ const extension = async (pi: ExtensionAPI): Promise<void> => {
         // ("OAuth refresh failed for anthropic: <message>"); pi persists what
         // we return, so there is nothing to write back here.
         //
-        // pi's merged timeout/user signal cancels only this caller's wait.
+        // pi's merged timeout/user signal ends only this caller's wait, never
+        // the delegated CLI run.
         async refreshToken(_credentials, signal): Promise<OAuthCreds> {
             return toOAuthCreds(await refreshActiveCredentials(signal))
         },
@@ -211,9 +212,9 @@ const extension = async (pi: ExtensionAPI): Promise<void> => {
         headers: { "user-agent": buildUserAgent() },
     })
 
-    // Tell the user once per session when the Claude Code login is dead. The
-    // check is a stat plus a small file read: no subprocess, no network, no
-    // timer. Nothing retries until Claude Code writes new credentials.
+    // Tell the user once per session when this process already learned that
+    // the Claude Code login is dead. The check is in memory plus at most a
+    // stat and a read: no subprocess, no network, no timer.
     pi.on("session_start", async (_event, ctx) => {
         const problem = getLoginProblem()
         if (problem) ctx.ui.notify(`pi-claude-auth: ${problem}`, "warning")

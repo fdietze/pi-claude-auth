@@ -15,11 +15,11 @@ export const CLAUDE_TIMEOUT_MS = 60_000
  */
 export class ClaudeCliUnavailable extends Error {}
 
-/** The refresh was stopped before it could finish. Transient, retryable. */
-export class ClaudeRefreshAborted extends Error {}
-
-/** No confirmed completion: keep the refresh barrier for manual recovery. */
-export class ClaudeTerminationUnconfirmed extends Error {}
+/**
+ * The refresh outlasted CLAUDE_TIMEOUT_MS and was stopped. Transient: it says
+ * nothing about the login, and rotation may or may not have completed.
+ */
+export class ClaudeRefreshTimedOut extends Error {}
 
 /**
  * Auth sources that outrank the Claude Code login inside the CLI. With one of
@@ -37,8 +37,7 @@ const OVERRIDING_AUTH_VARS = [
  * The run exists solely to make the CLI exercise its OAuth login, so any auth
  * source that would take precedence over that login is removed. Inheriting one
  * turns the refresh into a silent no-op: the CLI answers the prompt via the API
- * key, the credentials stay expired, and the caller records a futile refresh
- * and reports the login as dead.
+ * key, the credentials stay expired, and the caller reports the login as dead.
  *
  * TERM=dumb keeps the CLI from emitting terminal control sequences.
  *
@@ -90,6 +89,15 @@ export function readClaudeCliVersion(): Promise<string | null> {
 }
 
 /**
+ * Grace between SIGTERM and SIGKILL on timeout. On SIGTERM, Claude Code
+ * 2.1.316 shuts down gracefully and waits up to 2s for an in-flight OAuth
+ * refresh (`waitForHeldOAuthRefresh`), so a token it already redeemed still
+ * gets written. An immediate SIGKILL could land between the token POST and
+ * that write and lose the rotation.
+ */
+const KILL_GRACE_MS = 5_000
+
+/**
  * Make the Claude CLI refresh its own OAuth credentials.
  *
  * Claude Code is the only writer of its credentials: OAuth refresh tokens are
@@ -97,17 +105,16 @@ export function readClaudeCliVersion(): Promise<string | null> {
  * revoked server-side and logs the user out. There is no documented "refresh
  * only" command, so we trigger the CLI's own refresh path with the cheapest
  * request available (Haiku, minimal effort, a prompt answerable in one word)
- * and then re-read what it wrote.
+ * and then re-read what it wrote. Claude Code serializes concurrent refreshes
+ * with its own lock and re-reads under it, so concurrent runs from many pi
+ * processes still rotate the token once.
  *
- * The owner's signal can stop the run; request cancellation never reaches it.
- * The refresh barrier stays held until completion is confirmed.
+ * Only the timeout stops the run; callers can stop waiting for it, never stop
+ * it. The child is unref'd, so a run nobody waits for never keeps pi alive.
  *
- * Rejects when the CLI cannot be started, is aborted, times out, or exits
- * non-zero.
+ * Rejects when the CLI cannot be started, times out, or exits non-zero.
  */
-export function refreshViaClaudeCli(signal: AbortSignal): Promise<void> {
-    if (signal.aborted)
-        return Promise.reject(new ClaudeRefreshAborted("refresh aborted"))
+export function refreshViaClaudeCli(): Promise<void> {
     // Argument array (no shell) keeps the attack surface minimal.
     // cwd=tmpdir avoids picking up the project's CLAUDE.md/settings.
     //
@@ -124,79 +131,51 @@ export function refreshViaClaudeCli(signal: AbortSignal): Promise<void> {
             cwd: tmpdir(),
             env: buildRefreshEnv(),
             stdio: "ignore",
-            // Ordinary wrappers/children stay in this group. The completion
-            // contract below does not cover wrappers that escape the group.
+            // Own process group, so the timeout reaches wrapper children too.
             detached: process.platform !== "win32",
         },
     )
-
-    const stop = new AbortController()
-    const onAbort = () => stop.abort(signal.reason)
-    signal.addEventListener("abort", onAbort, { once: true })
-    return waitForClaudeCompletion(child, stop.signal).finally(() =>
-        signal.removeEventListener("abort", onAbort),
-    )
+    child.unref()
+    return waitForClaudeRefresh(child)
 }
 
-/** Completion means the direct child closed and its ordinary process group stopped.
- * Wrappers that escape that group and standalone Claude processes are outside
- * this extension's exclusion contract. Uncertainty preserves the barrier.
+/**
+ * Settle when `child` exits; on timeout, SIGTERM its process group and SIGKILL
+ * it after KILL_GRACE_MS. Exported for testing with fake children.
  */
-export function waitForClaudeCompletion(
+export function waitForClaudeRefresh(
     child: ChildProcess,
-    signal: AbortSignal,
     timeoutMs = CLAUDE_TIMEOUT_MS,
 ): Promise<void> {
     return new Promise((resolve, reject) => {
-        let stopped: "aborted" | "timeout" | null = null
-        let settled = false
-        let stopTimer: ReturnType<typeof setTimeout> | undefined
+        let timedOut = false
+        let killTimer: ReturnType<typeof setTimeout> | undefined
+        const timer = setTimeout(() => {
+            timedOut = true
+            signalGroup(child, "SIGTERM")
+            killTimer = setTimeout(
+                () => signalGroup(child, "SIGKILL"),
+                KILL_GRACE_MS,
+            )
+            killTimer.unref()
+        }, timeoutMs)
+        timer.unref()
         const settle = (err: Error | null) => {
-            if (settled) return
-            settled = true
             clearTimeout(timer)
-            clearTimeout(stopTimer)
-            signal.removeEventListener("abort", onAbort)
+            clearTimeout(killTimer)
             if (err) reject(err)
             else resolve()
         }
-        const stop = (reason: "aborted" | "timeout") => {
-            if (stopped || settled) return
-            stopped = reason
-            // A kill request is not completion. Wait for close, but fail closed
-            // if the runtime never confirms it, rather than release the lock.
-            kill(child)
-            stopTimer = setTimeout(
-                () =>
-                    settle(
-                        new ClaudeTerminationUnconfirmed(
-                            "Claude refresh stop could not be confirmed. Stop all extension-launched Claude processes before manually removing the refresh lock.",
-                        ),
-                    ),
-                5_000,
-            )
-        }
-        const timer = setTimeout(() => stop("timeout"), timeoutMs)
-        const onAbort = () => stop("aborted")
-        signal.addEventListener("abort", onAbort, { once: true })
-        if (signal.aborted) onAbort()
         child.on("error", (err) => {
-            // Spawn failure has no owner process. Other errors do not establish
-            // termination and must retain the exclusion barrier.
+            // Without a pid nothing was started; any later error still ends
+            // in "close", which settles.
             if (!child.pid) settle(new ClaudeCliUnavailable(err.message))
-            else settle(new ClaudeTerminationUnconfirmed(err.message))
         })
         child.on("close", (code, killedBy) => {
-            if (!groupStopped(child)) {
+            if (timedOut) {
                 settle(
-                    new ClaudeTerminationUnconfirmed(
-                        "Claude refresh process group may still be running; manual recovery required.",
-                    ),
-                )
-            } else if (stopped) {
-                settle(
-                    new ClaudeRefreshAborted(
-                        `Claude refresh ${stopped}; credential rotation may be incomplete. Retry after checking Claude Code login.`,
+                    new ClaudeRefreshTimedOut(
+                        `Claude refresh timed out after ${timeoutMs}ms`,
                     ),
                 )
             } else if (code === 0) settle(null)
@@ -205,22 +184,12 @@ export function waitForClaudeCompletion(
     })
 }
 
-function groupStopped(child: ChildProcess): boolean {
-    if (!child.pid || process.platform === "win32") return true
-    try {
-        process.kill(-child.pid, 0)
-        return false
-    } catch (err) {
-        return (err as NodeJS.ErrnoException).code === "ESRCH"
-    }
-}
-
-function kill(child: ChildProcess): void {
+function signalGroup(child: ChildProcess, signal: NodeJS.Signals): void {
     try {
         if (child.pid && process.platform !== "win32")
-            process.kill(-child.pid, "SIGKILL")
-        else child.kill("SIGKILL")
+            process.kill(-child.pid, signal)
+        else child.kill(signal)
     } catch {
-        // The close event and group probe, not this request, confirm stopping.
+        // Already gone: "close" settles.
     }
 }
