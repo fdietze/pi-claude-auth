@@ -4,6 +4,9 @@
 
 ### Fixes
 
+- Read `.credentials.json` from `CLAUDE_SECURESTORAGE_CONFIG_DIR`, then
+  `CLAUDE_CONFIG_DIR`, then `~/.claude`, like Claude Code does, so a relocated
+  Claude config dir works (contributed by @GRBurst).
 - macOS: pick up a token rotated by another process immediately. Keychain
   credentials were cached until their own expiry, so long-lived instances
   (subagents, idle sessions) kept sending the revoked token ("OAuth access token

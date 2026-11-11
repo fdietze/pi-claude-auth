@@ -14,7 +14,9 @@ const overrides = [
     "CLAUDE_CONFIG_DIR",
     "CLAUDE_SECURESTORAGE_CONFIG_DIR",
 ] as const
-const saved = Object.fromEntries(overrides.map((name) => [name, process.env[name]]))
+const saved = Object.fromEntries(
+    overrides.map((name) => [name, process.env[name]]),
+)
 
 afterEach(() => {
     for (const name of overrides) {
@@ -66,5 +68,8 @@ test("getClaudeConfigDir: an empty override counts as unset", () => {
 test("getClaudeCredentialsPath: resolves under the Claude config dir", () => {
     delete process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR
     process.env.CLAUDE_CONFIG_DIR = "/tmp/claude-agents"
-    assert.equal(getClaudeCredentialsPath(), "/tmp/claude-agents/.credentials.json")
+    assert.equal(
+        getClaudeCredentialsPath(),
+        "/tmp/claude-agents/.credentials.json",
+    )
 })

@@ -28,7 +28,7 @@ prove the login is still valid.
 ### Check Claude Code credentials (fallback for all platforms)
 
 ```bash
-test -s ~/.claude/.credentials.json
+test -s "${CLAUDE_SECURESTORAGE_CONFIG_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}}/.credentials.json"
 ```
 
 A successful exit finds a non-empty credentials file without printing tokens.

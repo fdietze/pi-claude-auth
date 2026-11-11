@@ -173,7 +173,9 @@ The extension checks these in order:
 
 1. macOS Keychain (all `Claude Code-credentials*` entries — multiple accounts
    are detected automatically)
-2. `~/.claude/.credentials.json` (fallback, works on all platforms)
+2. `~/.claude/.credentials.json` (fallback, works on all platforms). Like Claude
+   Code, the extension looks in `$CLAUDE_SECURESTORAGE_CONFIG_DIR`, then
+   `$CLAUDE_CONFIG_DIR`, before `~/.claude`.
 
 ## Multiple accounts (macOS)
 

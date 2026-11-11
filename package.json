@@ -33,7 +33,7 @@
     },
     "scripts": {
         "build": "tsc",
-        "test": "node --test --experimental-strip-types src/**/*.test.ts",
+        "test": "env -u CLAUDE_CONFIG_DIR -u CLAUDE_SECURESTORAGE_CONFIG_DIR node --test --experimental-strip-types src/**/*.test.ts",
         "smoke": "node --experimental-strip-types scripts/smoke-pi-runtime.ts",
         "lint": "oxlint && oxfmt --check .",
         "lint:fix": "oxlint --fix . && oxfmt --write .",

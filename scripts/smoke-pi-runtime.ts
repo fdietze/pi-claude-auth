@@ -27,8 +27,9 @@ import {
     rmSync,
     writeFileSync,
 } from "node:fs"
-import { homedir, tmpdir } from "node:os"
+import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { getClaudeCredentialsPath } from "../src/paths.ts"
 
 /**
  * Which pi to test. `pi` on PATH is sometimes a wrapper (a sandbox, or a shim
@@ -125,8 +126,12 @@ function expiredLoginRun(): void {
         chmodSync(stub, 0o755)
 
         const debugLog = join(home, "debug.log")
+        // The Claude config-dir overrides would point the isolated run at the
+        // real credentials (src/paths.ts getClaudeConfigDir), so drop them.
         const env = {
             ...process.env,
+            CLAUDE_CONFIG_DIR: undefined,
+            CLAUDE_SECURESTORAGE_CONFIG_DIR: undefined,
             HOME: home,
             PI_CODING_AGENT_DIR: join(home, ".pi", "agent"),
             PATH: `${bin}:${SMOKE_PATH}`,
@@ -193,10 +198,7 @@ function expiredLoginRun(): void {
 function realCredentialsRun(): void {
     let expiresAt = 0
     try {
-        const raw = readFileSync(
-            join(homedir(), ".claude", ".credentials.json"),
-            "utf-8",
-        )
+        const raw = readFileSync(getClaudeCredentialsPath(), "utf-8")
         expiresAt = JSON.parse(raw).claudeAiOauth?.expiresAt ?? 0
     } catch {
         console.log("skip real credentials: no credentials file")
